@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import UploadFile, File
 
 # Initialize app
 app = FastAPI()
@@ -50,3 +51,14 @@ def analytics():
             {"month": "Jan", "consumption": 12000}
         ]
     }
+# ─── Upload ───────────────────────────────────────
+@app.post("/upload-data")
+async def upload_data(file: UploadFile = File(...)):
+    contents = await file.read()
+
+    return {
+        "success": True,
+        "rowsProcessed": 100,
+        "message": f"File '{file.filename}' uploaded successfully"
+    }
+
