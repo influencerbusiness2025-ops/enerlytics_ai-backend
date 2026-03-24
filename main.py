@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File
+import pandas as pd
+from io import StringIO
 
 # Initialize app
 app = FastAPI()
@@ -51,14 +53,38 @@ def analytics():
             {"month": "Jan", "consumption": 12000}
         ]
     }
-# ─── Upload ───────────────────────────────────────
+# ─── Upload CSV ───────────────────────────────────────
+
 @app.post("/upload-data")
 async def upload_data(file: UploadFile = File(...)):
     contents = await file.read()
 
+    # Read CSV
+    df = pd.read_csv(StringIO(contents.decode("utf-8")))
+
+    # Identify time columns (all HH:MM columns)
+    time_columns = [col for col in df.columns if ":" in col]
+
+    # Convert wide → long format
+    df_long = df.melt(
+        id_vars=["reading_date"],
+        value_vars=time_columns,
+        var_name="time",
+        value_name="consumption"
+    )
+
+    # Create timestamp column
+    df_long["timestamp"] = pd.to_datetime(
+        df_long["reading_date"] + " " + df_long["time"]
+    )
+
+    # Clean final dataset
+    df_final = df_long[["timestamp", "consumption"]].sort_values("timestamp")
+
     return {
         "success": True,
-        "rowsProcessed": 100,
-        "message": f"File '{file.filename}' uploaded successfully"
+        "rowsProcessed": len(df_final),
+        "message": "File processed successfully",
+        "sample": df_final.head(5).to_dict(orient="records")
     }
 
