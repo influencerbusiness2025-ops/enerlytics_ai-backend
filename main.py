@@ -87,4 +87,30 @@ async def upload_data(file: UploadFile = File(...)):
         "message": "File processed successfully",
         "sample": df_final.head(5).to_dict(orient="records")
     }
+    # ─── Anomalies───────────────────────────────────────
+@app.get("/anomalies")
+def get_anomalies():
+    return {
+        "anomalies": [
+            {
+                "date": "2024-01-01",
+                "time": "14:00",
+                "consumption": 500,
+                "expected": 300,
+                "deviation": 200,
+                "severity": "high",
+                "type": "spike"
+            }
+        ],
+        "summary": {
+            "total": 1,
+            "high": 1,
+            "medium": 0,
+            "low": 0,
+            "spikes": 1,
+            "drops": 0
+        },
+        "chartData": [],
+        "avgDaily": 400
+    }
 
