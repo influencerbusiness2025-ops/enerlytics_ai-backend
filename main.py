@@ -1,8 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import UploadFile, File
 import pandas as pd
-from io import StringIO
+from io import StringIO, BytesIO
 
 # Initialize app
 app = FastAPI()
@@ -53,14 +53,25 @@ def analytics():
             {"month": "Jan", "consumption": 12000}
         ]
     }
-# ─── Upload CSV ───────────────────────────────────────
+# ─── Upload CSV / Excel ───────────────────────────────────────
 
 @app.post("/upload-data")
 async def upload_data(file: UploadFile = File(...)):
     contents = await file.read()
 
-    # Read CSV
-    df = pd.read_csv(StringIO(contents.decode("utf-8")))
+    # Detect file type and parse accordingly
+    filename = file.filename or ""
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+
+    if ext == "csv":
+        df = pd.read_csv(StringIO(contents.decode("utf-8")))
+    elif ext in ("xlsx", "xls"):
+        df = pd.read_excel(BytesIO(contents))
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '.{ext}'. Please upload a .csv, .xlsx, or .xls file."
+        )
 
     # Identify time columns (all HH:MM columns)
     time_columns = [col for col in df.columns if ":" in col]
