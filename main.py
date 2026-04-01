@@ -1,127 +1,179 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import UploadFile, File
 import pandas as pd
-from io import StringIO, BytesIO
+from io import StringIO
 
-# Initialize app
 app = FastAPI()
 
-# ─── CORS CONFIGURATION ────────────────────────────────────────
+# ─── CORS ──────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For now allow all (later restrict to your frontend domain)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ─── ROOT ENDPOINT ─────────────────────────────────────────────
+# ─── GLOBAL STORAGE (TEMP - replace with DB later) ──────────────
+stored_data = None
+
+# ─── ROOT ──────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {"message": "Enerlytics API running 🚀"}
 
-# ─── HEALTH CHECK (Optional but useful) ────────────────────────
+# ─── HEALTH ────────────────────────────────────────────────────
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# ─── ANALYTICS ENDPOINT ───────────────────────────────────────
-@app.get("/analytics")
-def analytics():
-    return {
-        "stats": {
-            "totalConsumption": 12000,
-            "avgDaily": 400,
-            "peakDemand": 250,
-            "peakDay": "Monday",
-            "estimatedCost": 1500,
-            "baseload": 120,
-            "daysOfData": 30,
-            "trend": {
-                "consumptionChange": 5,
-                "costChange": 3
-            }
-        },
-        "daily": [
-            {"date": "2024-01-01", "label": "Jan 1", "consumption": 400}
-        ],
-        "weekly": [
-            {"week": "Week 1", "consumption": 2800}
-        ],
-        "monthly": [
-            {"month": "Jan", "consumption": 12000}
-        ]
-    }
-# ─── Upload CSV / Excel ───────────────────────────────────────
-
+# ─── UPLOAD DATA ───────────────────────────────────────────────
 @app.post("/upload-data")
 async def upload_data(file: UploadFile = File(...)):
+    global stored_data
+
     contents = await file.read()
 
-    # Detect file type and parse accordingly
-    filename = file.filename or ""
-    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    # Read CSV
+    df = pd.read_csv(StringIO(contents.decode("utf-8")))
 
-    if ext == "csv":
-        df = pd.read_csv(StringIO(contents.decode("utf-8")))
-    elif ext in ("xlsx", "xls"):
-        df = pd.read_excel(BytesIO(contents))
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '.{ext}'. Please upload a .csv, .xlsx, or .xls file."
-        )
-
-    # Identify time columns (all HH:MM columns)
+    # Detect time columns (HH:MM format)
     time_columns = [col for col in df.columns if ":" in col]
 
-    # Convert wide → long format
+    if not time_columns:
+        return {"success": False, "message": "No time-based columns found"}
+
+    # Convert wide → long
     df_long = df.melt(
-        id_vars=["reading_date"],
+        id_vars=["Date"],
         value_vars=time_columns,
         var_name="time",
         value_name="consumption"
     )
 
-    # Create timestamp column
+    # Convert to numeric
+    df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
+
+    # Drop invalid values
+    df_long = df_long.dropna(subset=["consumption"])
+
+    # Create timestamp
     df_long["timestamp"] = pd.to_datetime(
-        df_long["reading_date"] + " " + df_long["time"]
+        df_long["Date"] + " " + df_long["time"],
+        errors="coerce"
     )
 
-    # Clean final dataset
+    df_long = df_long.dropna(subset=["timestamp"])
+
+    # Final dataset
     df_final = df_long[["timestamp", "consumption"]].sort_values("timestamp")
+
+    # Store globally
+    stored_data = df_final
 
     return {
         "success": True,
         "rowsProcessed": len(df_final),
-        "message": "File processed successfully",
-        "sample": df_final.head(5).to_dict(orient="records")
+        "message": "File processed successfully"
     }
-    # ─── Anomalies───────────────────────────────────────
+
+# ─── ANALYTICS ─────────────────────────────────────────────────
+@app.get("/analytics")
+def analytics():
+    global stored_data
+
+    if stored_data is None:
+        return {
+            "stats": {
+                "totalConsumption": 0,
+                "avgDaily": 0,
+                "peakDemand": 0,
+                "peakDay": "N/A",
+                "estimatedCost": 0,
+                "baseload": 0,
+                "daysOfData": 0,
+                "trend": {
+                    "consumptionChange": 0,
+                    "costChange": 0
+                }
+            },
+            "daily": [],
+            "weekly": [],
+            "monthly": []
+        }
+
+    df = stored_data.copy()
+
+    # Add date column
+    df["date"] = df["timestamp"].dt.date
+
+    # Daily aggregation
+    daily = df.groupby("date")["consumption"].sum().reset_index()
+
+    # Weekly aggregation
+    df["week"] = df["timestamp"].dt.isocalendar().week
+    weekly = df.groupby("week")["consumption"].sum().reset_index()
+
+    # Monthly aggregation
+    df["month"] = df["timestamp"].dt.strftime("%b")
+    monthly = df.groupby("month")["consumption"].sum().reset_index()
+
+    # Stats
+    total_consumption = df["consumption"].sum()
+    avg_daily = daily["consumption"].mean()
+    peak_demand = df["consumption"].max()
+
+    return {
+        "stats": {
+            "totalConsumption": float(total_consumption),
+            "avgDaily": float(avg_daily),
+            "peakDemand": float(peak_demand),
+            "peakDay": str(daily.loc[daily["consumption"].idxmax(), "date"]),
+            "estimatedCost": float(total_consumption * 0.15),
+            "baseload": float(df["consumption"].quantile(0.1)),
+            "daysOfData": int(len(daily)),
+            "trend": {
+                "consumptionChange": 0,
+                "costChange": 0
+            }
+        },
+        "daily": [
+            {
+                "date": str(row["date"]),
+                "label": str(row["date"]),
+                "consumption": float(row["consumption"])
+            }
+            for _, row in daily.iterrows()
+        ],
+        "weekly": [
+            {
+                "week": f"Week {int(row['week'])}",
+                "consumption": float(row["consumption"])
+            }
+            for _, row in weekly.iterrows()
+        ],
+        "monthly": [
+            {
+                "month": row["month"],
+                "consumption": float(row["consumption"])
+            }
+            for _, row in monthly.iterrows()
+        ]
+    }
+
+# ─── ANOMALIES (TEMP MOCK) ─────────────────────────────────────
 @app.get("/anomalies")
 def get_anomalies():
     return {
-        "anomalies": [
-            {
-                "date": "2024-01-01",
-                "time": "14:00",
-                "consumption": 500,
-                "expected": 300,
-                "deviation": 200,
-                "severity": "high",
-                "type": "spike"
-            }
-        ],
+        "anomalies": [],
         "summary": {
-            "total": 1,
-            "high": 1,
+            "total": 0,
+            "high": 0,
             "medium": 0,
             "low": 0,
-            "spikes": 1,
+            "spikes": 0,
             "drops": 0
         },
         "chartData": [],
-        "avgDaily": 400
+        "avgDaily": 0
     }
-
