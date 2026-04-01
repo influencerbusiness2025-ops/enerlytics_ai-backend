@@ -29,7 +29,7 @@ allow_headers=["*"],
 
 @app.get("/")
 def root():
-return {"message": "Enerlytics API running 🚀"}
+    return {"message": "Enerlytics API running 🚀"}
 
 # ─── HEALTH ───────────────────────────────────────────────────
 
