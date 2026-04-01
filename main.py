@@ -37,11 +37,17 @@ async def upload_data(file: UploadFile = File(...)):
     # Read CSV
     df = pd.read_csv(StringIO(contents.decode("utf-8")))
 
+    # Clean column names
+    df.columns = df.columns.str.strip()
+
     # Detect time columns (HH:MM format)
     time_columns = [col for col in df.columns if ":" in col]
 
     if not time_columns:
         return {"success": False, "message": "No time-based columns found"}
+
+    if "Date" not in df.columns:
+        return {"success": False, "message": "Missing 'Date' column"}
 
     # Convert wide → long
     df_long = df.melt(
@@ -51,24 +57,25 @@ async def upload_data(file: UploadFile = File(...)):
         value_name="consumption"
     )
 
-    # Convert to numeric
+    # Convert to numeric safely
     df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
 
     # Drop invalid values
     df_long = df_long.dropna(subset=["consumption"])
 
-    # Create timestamp
+    # Create timestamp (IMPORTANT: dayfirst=True)
     df_long["timestamp"] = pd.to_datetime(
         df_long["Date"] + " " + df_long["time"],
+        dayfirst=True,
         errors="coerce"
     )
 
     df_long = df_long.dropna(subset=["timestamp"])
 
-    # Final dataset
+    # Final cleaned dataset
     df_final = df_long[["timestamp", "consumption"]].sort_values("timestamp")
 
-    # Store globally
+    # Store data (temporary memory)
     stored_data = df_final
 
     return {
@@ -104,18 +111,18 @@ def analytics():
 
     df = stored_data.copy()
 
-    # Create date column
+    # Add date
     df["date"] = df["timestamp"].dt.date
 
-    # DAILY
+    # DAILY aggregation
     daily = df.groupby("date")["consumption"].sum().reset_index()
 
-    # WEEKLY
-    df["week"] = df["timestamp"].dt.isocalendar().week
+    # WEEKLY aggregation (correct grouping)
+    df["week"] = df["timestamp"].dt.to_period("W").astype(str)
     weekly = df.groupby("week")["consumption"].sum().reset_index()
 
-    # MONTHLY
-    df["month"] = df["timestamp"].dt.strftime("%b")
+    # MONTHLY aggregation (correct grouping)
+    df["month"] = df["timestamp"].dt.to_period("M").astype(str)
     monthly = df.groupby("month")["consumption"].sum().reset_index()
 
     # STATS
@@ -147,7 +154,7 @@ def analytics():
         ],
         "weekly": [
             {
-                "week": f"Week {int(row['week'])}",
+                "week": row["week"],
                 "consumption": float(row["consumption"])
             }
             for _, row in weekly.iterrows()
@@ -161,7 +168,7 @@ def analytics():
         ]
     }
 
-# ─── ANOMALIES (TEMP MOCK) ─────────────────────────────────────
+# ─── ANOMALIES (PLACEHOLDER) ───────────────────────────────────
 @app.get("/anomalies")
 def get_anomalies():
     return {
