@@ -34,15 +34,16 @@ def health():
 # ─── UPLOAD DATA ───────────────────────────────────────────────
 @app.post("/upload-data")
 async def upload_data(file: UploadFile = File(...)):
-    contents = await file.read()
+try:
+contents = await file.read()
 
+```
     df = pd.read_csv(StringIO(contents.decode("utf-8")))
     df.columns = df.columns.str.strip()
 
     if "Date" not in df.columns:
         return {"success": False, "message": "Missing 'Date' column"}
 
-    # Detect time columns (00:00, 00:30 etc.)
     time_columns = [col for col in df.columns if ":" in col]
 
     if not time_columns:
@@ -56,11 +57,9 @@ async def upload_data(file: UploadFile = File(...)):
         value_name="consumption"
     )
 
-    # Clean data
     df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
     df_long = df_long.dropna(subset=["consumption"])
 
-    # Create timestamp
     df_long["timestamp"] = pd.to_datetime(
         df_long["Date"] + " " + df_long["time"],
         dayfirst=True,
@@ -71,18 +70,27 @@ async def upload_data(file: UploadFile = File(...)):
 
     df_final = df_long[["timestamp", "consumption"]]
 
-    # ─── SAVE TO SUPABASE ───────────────────────────────────────
+    # 👉 DEBUG PRINT
+    print("Rows to insert:", len(df_final))
+
     records = df_final.to_dict(orient="records")
 
-    batch_size = 500
-    for i in range(0, len(records), batch_size):
-        supabase.table("energy_data").insert(records[i:i+batch_size]).execute()
+    # 👉 INSERT WITH ERROR CHECK
+    response = supabase.table("energy_data").insert(records[:500]).execute()
+
+    print("Supabase response:", response)
 
     return {
         "success": True,
         "rowsProcessed": len(records),
-        "message": "Saved to database"
+        "message": "Upload attempted"
     }
+
+except Exception as e:
+    print("ERROR:", str(e))
+    return {"success": False, "message": str(e)}
+```
+
 
 # ─── ANALYTICS ─────────────────────────────────────────────────
 @app.get("/analytics")
