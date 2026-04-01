@@ -104,21 +104,21 @@ def analytics():
 
     df = stored_data.copy()
 
-    # Add date column
+    # Create date column
     df["date"] = df["timestamp"].dt.date
 
-    # Daily aggregation
+    # DAILY
     daily = df.groupby("date")["consumption"].sum().reset_index()
 
-    # Weekly aggregation
+    # WEEKLY
     df["week"] = df["timestamp"].dt.isocalendar().week
     weekly = df.groupby("week")["consumption"].sum().reset_index()
 
-    # Monthly aggregation
+    # MONTHLY
     df["month"] = df["timestamp"].dt.strftime("%b")
     monthly = df.groupby("month")["consumption"].sum().reset_index()
 
-    # Stats
+    # STATS
     total_consumption = df["consumption"].sum()
     avg_daily = daily["consumption"].mean()
     peak_demand = df["consumption"].max()
