@@ -78,7 +78,7 @@ async def upload_data(file: UploadFile = File(...)):
 
     # Convert wide → long format
     df_long = df.melt(
-        id_vars=["reading_date"],
+        id_vars=["Date"],
         value_vars=time_columns,
         var_name="time",
         value_name="consumption"
@@ -86,7 +86,7 @@ async def upload_data(file: UploadFile = File(...)):
 
     # Create timestamp column
     df_long["timestamp"] = pd.to_datetime(
-        df_long["reading_date"] + " " + df_long["time"]
+        df_long["Date"] + " " + df_long["time"]
     )
 
     # Clean final dataset
