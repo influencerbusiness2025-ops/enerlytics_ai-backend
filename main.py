@@ -1,37 +1,42 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from supabase import create_client
 import pandas as pd
 from io import StringIO
-from supabase import create_client
 
-app = FastAPI()
+# ─── SUPABASE CONFIG ───────────────────────────────────────────
 
-# ─── CORS ──────────────────────────────────────────────────────
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ─── SUPABASE INIT (HARDCODED FOR NOW) ─────────────────────────
 SUPABASE_URL = "https://fopzbnloivgxzupxvhcr.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZvcHpibmxvaXZneHp1cHh2aGNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5Nzk5ODcsImV4cCI6MjA5MDU1NTk4N30.GC0Rs6N79vcXuyVBCqpyS5xH76sJ-Ea2CrY22gPyDMs"
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+app = FastAPI()
+
+# ─── CORS ──────────────────────────────────────────────────────
+
+app.add_middleware(
+CORSMiddleware,
+allow_origins=["*"],
+allow_credentials=True,
+allow_methods=["*"],
+allow_headers=["*"],
+)
+
 # ─── ROOT ──────────────────────────────────────────────────────
+
 @app.get("/")
 def root():
-    return {"message": "Enerlytics API running 🚀"}
+return {"message": "Enerlytics API running 🚀"}
 
 # ─── HEALTH ────────────────────────────────────────────────────
+
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+return {"status": "ok"}
 
 # ─── UPLOAD DATA ───────────────────────────────────────────────
+
 @app.post("/upload-data")
 async def upload_data(file: UploadFile = File(...)):
 try:
@@ -49,7 +54,6 @@ contents = await file.read()
     if not time_columns:
         return {"success": False, "message": "No time columns found"}
 
-    # Convert wide → long
     df_long = df.melt(
         id_vars=["Date"],
         value_vars=time_columns,
@@ -70,33 +74,35 @@ contents = await file.read()
 
     df_final = df_long[["timestamp", "consumption"]]
 
-    # 👉 DEBUG PRINT
-    print("Rows to insert:", len(df_final))
-
     records = df_final.to_dict(orient="records")
 
-    # 👉 INSERT WITH ERROR CHECK
-    response = supabase.table("energy_data").insert(records[:500]).execute()
-
-    print("Supabase response:", response)
+    # Insert in batches (important for large files)
+    batch_size = 500
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+        response = supabase.table("energy_data").insert(batch).execute()
+        print("Inserted batch:", i, "→", i + len(batch))
 
     return {
         "success": True,
         "rowsProcessed": len(records),
-        "message": "Upload attempted"
+        "message": "Data stored in Supabase"
     }
 
 except Exception as e:
-    print("ERROR:", str(e))
+    print("UPLOAD ERROR:", str(e))
     return {"success": False, "message": str(e)}
 ```
 
-
 # ─── ANALYTICS ─────────────────────────────────────────────────
+
 @app.get("/analytics")
 def analytics():
-    result = supabase.table("energy_data").select("*").execute()
-    data = result.data
+try:
+response = supabase.table("energy_data").select("*").execute()
+
+```
+    data = response.data
 
     if not data:
         return {
@@ -123,26 +129,25 @@ def analytics():
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["date"] = df["timestamp"].dt.date
 
-    # DAILY
     daily = df.groupby("date")["consumption"].sum().reset_index()
 
-    # WEEKLY
     df["week"] = df["timestamp"].dt.isocalendar().week
     weekly = df.groupby("week")["consumption"].sum().reset_index()
 
-    # MONTHLY
     df["month"] = df["timestamp"].dt.strftime("%b")
     monthly = df.groupby("month")["consumption"].sum().reset_index()
 
-    total = df["consumption"].sum()
+    total_consumption = df["consumption"].sum()
+    avg_daily = daily["consumption"].mean()
+    peak_demand = df["consumption"].max()
 
     return {
         "stats": {
-            "totalConsumption": float(total),
-            "avgDaily": float(daily["consumption"].mean()),
-            "peakDemand": float(df["consumption"].max()),
+            "totalConsumption": float(total_consumption),
+            "avgDaily": float(avg_daily),
+            "peakDemand": float(peak_demand),
             "peakDay": str(daily.loc[daily["consumption"].idxmax(), "date"]),
-            "estimatedCost": float(total * 0.15),
+            "estimatedCost": float(total_consumption * 0.15),
             "baseload": float(df["consumption"].quantile(0.1)),
             "daysOfData": int(len(daily)),
             "trend": {
@@ -151,32 +156,38 @@ def analytics():
             }
         },
         "daily": [
-            {"date": str(r["date"]), "label": str(r["date"]), "consumption": float(r["consumption"])}
-            for _, r in daily.iterrows()
+            {"date": str(row["date"]), "label": str(row["date"]), "consumption": float(row["consumption"])}
+            for _, row in daily.iterrows()
         ],
         "weekly": [
-            {"week": f"Week {int(r['week'])}", "consumption": float(r["consumption"])}
-            for _, r in weekly.iterrows()
+            {"week": f"Week {int(row['week'])}", "consumption": float(row["consumption"])}
+            for _, row in weekly.iterrows()
         ],
         "monthly": [
-            {"month": r["month"], "consumption": float(r["consumption"])}
-            for _, r in monthly.iterrows()
+            {"month": row["month"], "consumption": float(row["consumption"])}
+            for _, row in monthly.iterrows()
         ]
     }
 
-# ─── ANOMALIES ─────────────────────────────────────────────────
+except Exception as e:
+    print("ANALYTICS ERROR:", str(e))
+    return {"error": str(e)}
+```
+
+# ─── ANOMALIES (TEMP) ──────────────────────────────────────────
+
 @app.get("/anomalies")
-def anomalies():
-    return {
-        "anomalies": [],
-        "summary": {
-            "total": 0,
-            "high": 0,
-            "medium": 0,
-            "low": 0,
-            "spikes": 0,
-            "drops": 0
-        },
-        "chartData": [],
-        "avgDaily": 0
-    }
+def get_anomalies():
+return {
+"anomalies": [],
+"summary": {
+"total": 0,
+"high": 0,
+"medium": 0,
+"low": 0,
+"spikes": 0,
+"drops": 0
+},
+"chartData": [],
+"avgDaily": 0
+}
