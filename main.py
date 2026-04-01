@@ -2,7 +2,6 @@ from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from io import StringIO
-import os
 from supabase import create_client
 
 app = FastAPI()
@@ -16,16 +15,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── SUPABASE INIT ─────────────────────────────────────────────
-SUPABASE_URL = os.getenv("https://fopzbnloivgxzupxvhcr.supabase.co")
-SUPABASE_KEY = os.getenv("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZvcHpibmxvaXZneHp1cHh2aGNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5Nzk5ODcsImV4cCI6MjA5MDU1NTk4N30.GC0Rs6N79vcXuyVBCqpyS5xH76sJ-Ea2CrY22gPyDMs")
+# ─── SUPABASE INIT (HARDCODED FOR NOW) ─────────────────────────
+SUPABASE_URL = "https://fopzbnloivgxzupxvhcr.supabase.co"
+SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZvcHpibmxvaXZneHp1cHh2aGNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5Nzk5ODcsImV4cCI6MjA5MDU1NTk4N30.GC0Rs6N79vcXuyVBCqpyS5xH76sJ-Ea2CrY22gPyDMs"
 
-supabase = create_client(https://fopzbnloivgxzupxvhcr.supabase.co,eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZvcHpibmxvaXZneHp1cHh2aGNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ5Nzk5ODcsImV4cCI6MjA5MDU1NTk4N30.GC0Rs6N79vcXuyVBCqpyS5xH76sJ-Ea2CrY22gPyDMs)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ─── ROOT ──────────────────────────────────────────────────────
 @app.get("/")
 def root():
     return {"message": "Enerlytics API running 🚀"}
+
+# ─── HEALTH ────────────────────────────────────────────────────
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 
 # ─── UPLOAD DATA ───────────────────────────────────────────────
 @app.post("/upload-data")
@@ -38,8 +42,13 @@ async def upload_data(file: UploadFile = File(...)):
     if "Date" not in df.columns:
         return {"success": False, "message": "Missing 'Date' column"}
 
+    # Detect time columns (00:00, 00:30 etc.)
     time_columns = [col for col in df.columns if ":" in col]
 
+    if not time_columns:
+        return {"success": False, "message": "No time columns found"}
+
+    # Convert wide → long
     df_long = df.melt(
         id_vars=["Date"],
         value_vars=time_columns,
@@ -47,9 +56,11 @@ async def upload_data(file: UploadFile = File(...)):
         value_name="consumption"
     )
 
+    # Clean data
     df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
     df_long = df_long.dropna(subset=["consumption"])
 
+    # Create timestamp
     df_long["timestamp"] = pd.to_datetime(
         df_long["Date"] + " " + df_long["time"],
         dayfirst=True,
@@ -60,10 +71,9 @@ async def upload_data(file: UploadFile = File(...)):
 
     df_final = df_long[["timestamp", "consumption"]]
 
-    # 🔥 SAVE TO SUPABASE
+    # ─── SAVE TO SUPABASE ───────────────────────────────────────
     records = df_final.to_dict(orient="records")
 
-    # Insert in batches (important)
     batch_size = 500
     for i in range(0, len(records), batch_size):
         supabase.table("energy_data").insert(records[i:i+batch_size]).execute()
@@ -78,7 +88,6 @@ async def upload_data(file: UploadFile = File(...)):
 @app.get("/analytics")
 def analytics():
     result = supabase.table("energy_data").select("*").execute()
-
     data = result.data
 
     if not data:
@@ -106,12 +115,15 @@ def analytics():
     df["timestamp"] = pd.to_datetime(df["timestamp"])
     df["date"] = df["timestamp"].dt.date
 
+    # DAILY
     daily = df.groupby("date")["consumption"].sum().reset_index()
 
-    df["week"] = df["timestamp"].dt.to_period("W").astype(str)
+    # WEEKLY
+    df["week"] = df["timestamp"].dt.isocalendar().week
     weekly = df.groupby("week")["consumption"].sum().reset_index()
 
-    df["month"] = df["timestamp"].dt.to_period("M").astype(str)
+    # MONTHLY
+    df["month"] = df["timestamp"].dt.strftime("%b")
     monthly = df.groupby("month")["consumption"].sum().reset_index()
 
     total = df["consumption"].sum()
@@ -135,11 +147,28 @@ def analytics():
             for _, r in daily.iterrows()
         ],
         "weekly": [
-            {"week": r["week"], "consumption": float(r["consumption"])}
+            {"week": f"Week {int(r['week'])}", "consumption": float(r["consumption"])}
             for _, r in weekly.iterrows()
         ],
         "monthly": [
             {"month": r["month"], "consumption": float(r["consumption"])}
             for _, r in monthly.iterrows()
         ]
+    }
+
+# ─── ANOMALIES ─────────────────────────────────────────────────
+@app.get("/anomalies")
+def anomalies():
+    return {
+        "anomalies": [],
+        "summary": {
+            "total": 0,
+            "high": 0,
+            "medium": 0,
+            "low": 0,
+            "spikes": 0,
+            "drops": 0
+        },
+        "chartData": [],
+        "avgDaily": 0
     }
