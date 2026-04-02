@@ -199,7 +199,7 @@ def anomalies():
 @app.delete("/delete-data")
 def delete_data():
     try:
-        response = supabase.table("energy_data").delete().neq("id", "").execute()
+        response = supabase.table("energy_data").delete().gt("id", "00000000-0000-0000-0000-000000000000").execute()
 
         return {
             "success": True,
