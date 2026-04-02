@@ -123,58 +123,117 @@ def analytics():
 
     if not data:
         return {
-            "stats": {
-                "totalConsumption": 0,
-                "avgDaily": 0,
-                "peakDemand": 0,
-                "peakDay": "N/A",
-                "estimatedCost": 0,
-                "baseload": 0,
-                "daysOfData": 0,
-                "trend": {
-                    "consumptionChange": 0,
-                    "costChange": 0
-                }
-            },
-            "daily": [],
-            "weekly": [],
-            "monthly": []
+            "stats": {},
+            "hourlyProfile": [],
+            "heatmap": [],
+            "aiRecommendation": None,
+            "assets": []
         }
+
+    import pandas as pd
+    import numpy as np
 
     df = pd.DataFrame(data)
     df["timestamp"] = pd.to_datetime(df["timestamp"])
 
-    df["date"] = df["timestamp"].dt.date
-    df["week"] = df["timestamp"].dt.isocalendar().week
-    df["month"] = df["timestamp"].dt.strftime("%b")
+    # ─── BASIC STATS ─────────────────────────────
+    total_consumption = df["consumption"].sum()
+    avg_daily = df.groupby(df["timestamp"].dt.date)["consumption"].sum().mean()
+    peak_demand = df["consumption"].max()
+    baseload = df["consumption"].quantile(0.1)
+    load_factor = avg_daily / peak_demand if peak_demand else 0
 
-    daily = df.groupby("date")["consumption"].sum().reset_index()
-    weekly = df.groupby("week")["consumption"].sum().reset_index()
-    monthly = df.groupby("month")["consumption"].sum().reset_index()
+    # ─── HOURLY PROFILE ─────────────────────────
+    df["hour"] = df["timestamp"].dt.hour
 
+    hourly_avg = df.groupby("hour")["consumption"].mean().reset_index()
+
+    df["is_weekend"] = df["timestamp"].dt.weekday >= 5
+    weekday_avg = df[~df["is_weekend"]].groupby("hour")["consumption"].mean()
+    weekend_avg = df[df["is_weekend"]].groupby("hour")["consumption"].mean()
+
+    hourly_profile = []
+    for _, row in hourly_avg.iterrows():
+        hour = int(row["hour"])
+        hourly_profile.append({
+            "hour": f"{hour:02d}:00",
+            "average": float(row["consumption"]),
+            "weekday": float(weekday_avg.get(hour, 0)),
+            "weekend": float(weekend_avg.get(hour, 0))
+        })
+
+    # ─── HEATMAP (7x24 simplified → frontend can reshape) ─────
+    df["day"] = df["timestamp"].dt.weekday  # 0=Mon
+
+    heatmap_df = df.groupby(["day", "hour"])["consumption"].mean().reset_index()
+
+    max_val = heatmap_df["consumption"].max() if not heatmap_df.empty else 1
+
+    heatmap = [
+        {
+            "day": int(row["day"]),
+            "hour": int(row["hour"]),
+            "value": float(row["consumption"]),
+            "intensity": float(row["consumption"] / max_val) if max_val else 0
+        }
+        for _, row in heatmap_df.iterrows()
+    ]
+
+    # ─── AI RECOMMENDATION (RULE-BASED FOR NOW) ───────────────
+    savings = total_consumption * 0.1  # assume 10% saving potential
+    monthly_cost = total_consumption * 0.15  # £0.15 per kWh approx
+    co2 = total_consumption * 0.233  # kg CO2 per kWh (UK approx)
+
+    ai_recommendation = {
+        "summary": "Shift peak loads and optimize baseload to reduce energy consumption by ~10%",
+        "monthlyCost": float(monthly_cost),
+        "co2Impact": float(co2),
+        "potentialSavings": float(savings)
+    }
+
+    # ─── ASSETS (SIMULATED BREAKDOWN) ───────────────────────
+    assets = [
+        {
+            "name": "HVAC",
+            "share": 40,
+            "cost": float(monthly_cost * 0.4),
+            "carbon": float(co2 * 0.4),
+            "trend": 5,
+            "trendDir": "up",
+            "status": "inefficient"
+        },
+        {
+            "name": "Lighting",
+            "share": 20,
+            "cost": float(monthly_cost * 0.2),
+            "carbon": float(co2 * 0.2),
+            "trend": -2,
+            "trendDir": "down",
+            "status": "optimal"
+        },
+        {
+            "name": "Equipment",
+            "share": 40,
+            "cost": float(monthly_cost * 0.4),
+            "carbon": float(co2 * 0.4),
+            "trend": 1,
+            "trendDir": "up",
+            "status": "moderate"
+        }
+    ]
+
+    # ─── FINAL RESPONSE ─────────────────────────
     return {
         "stats": {
-            "totalConsumption": float(df["consumption"].sum()),
-            "avgDaily": float(daily["consumption"].mean()),
-            "peakDemand": float(df["consumption"].max()),
-            "peakDay": str(daily.loc[daily["consumption"].idxmax(), "date"]),
-            "estimatedCost": float(df["consumption"].sum() * 0.15),
-            "baseload": float(df["consumption"].quantile(0.1)),
-            "daysOfData": int(len(daily)),
-            "trend": {"consumptionChange": 0, "costChange": 0}
+            "baseload": float(baseload),
+            "peakDemand": float(peak_demand),
+            "loadFactor": float(load_factor),
+            "avgDaily": float(avg_daily)
         },
-        "daily": [
-            {"date": str(r["date"]), "label": str(r["date"]), "consumption": float(r["consumption"])}
-            for _, r in daily.iterrows()
-        ],
-        "weekly": [
-            {"week": f"Week {int(r['week'])}", "consumption": float(r["consumption"])}
-            for _, r in weekly.iterrows()
-        ],
-        "monthly": [
-            {"month": r["month"], "consumption": float(r["consumption"])}
-            for _, r in monthly.iterrows()
-        ]
+        "hourlyProfile": hourly_profile,
+        "heatmap": heatmap,
+        "aiRecommendation": ai_recommendation,
+        "assets": assets
     }
 
 # ─── ANOMALIES ────────────────────────────────────────────────
