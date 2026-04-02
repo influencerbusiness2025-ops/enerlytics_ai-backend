@@ -41,129 +41,143 @@ def health():
 
 @app.post("/upload-data")
 async def upload_data(file: UploadFile = File(...)):
-    contents = await file.read()
+    try:
+        contents = await file.read()
+        df = pd.read_csv(StringIO(contents.decode("utf-8")))
 
-    df = pd.read_csv(StringIO(contents.decode("utf-8")))
+        # Detect date column
+        date_col = next((c for c in df.columns if "date" in c.lower()), None)
+        if not date_col:
+            return {"success": False, "message": "No date column found"}
 
-    # Detect date column automatically
-    date_col = next((c for c in df.columns if "date" in c.lower()), None)
+        # Detect time columns
+        time_columns = [col for col in df.columns if ":" in col]
+        if not time_columns:
+            return {"success": False, "message": "No time columns found"}
 
-    if not date_col:
-        return {"success": False, "message": "No date column found"}
+        # Convert wide → long
+        df_long = df.melt(
+            id_vars=[date_col],
+            value_vars=time_columns,
+            var_name="time",
+            value_name="consumption"
+        )
 
-    # Detect time columns
-    time_columns = [col for col in df.columns if ":" in col]
+        # Clean numeric
+        df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
+        df_long = df_long.dropna(subset=["consumption"])
 
-    if not time_columns:
-        return {"success": False, "message": "No time columns found"}
+        # Create timestamp (handles DD/MM/YYYY)
+        df_long["timestamp"] = pd.to_datetime(
+            df_long[date_col].astype(str) + " " + df_long["time"],
+            dayfirst=True,
+            errors="coerce"
+        )
 
-    # Convert wide → long
-    df_long = df.melt(
-        id_vars=[date_col],
-        value_vars=time_columns,
-        var_name="time",
-        value_name="consumption"
-    )
+        df_long = df_long.dropna(subset=["timestamp"])
 
-    # Clean data
-    df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
-    df_long = df_long.dropna(subset=["consumption"])
+        df_final = df_long[["timestamp", "consumption"]]
 
-    # Create timestamp
-    df_long["timestamp"] = pd.to_datetime(
-        df_long[date_col].astype(str) + " " + df_long["time"],
-        errors="coerce"
-    )
+        records = df_final.to_dict(orient="records")
 
-    df_long = df_long.dropna(subset=["timestamp"])
+        if not records:
+            return {"success": False, "message": "No valid data found"}
 
-    df_final = df_long[["timestamp", "consumption"]]
+        print("Rows to insert:", len(records))
 
-    # Convert to list
-    records = df_final.to_dict(orient="records")
+        # Batch insert (FIX)
+        batch_size = 500
+        for i in range(0, len(records), batch_size):
+            batch = records[i:i + batch_size]
+            supabase.table("energy_data").insert(batch).execute()
 
-    if not records:
-        return {"success": False, "message": "No valid data found"}
+        return {
+            "success": True,
+            "rowsProcessed": len(records),
+            "message": "Data stored in database"
+        }
 
-    # Insert into Supabase (batch safe)
-    supabase.table("energy_data").insert(records).execute()
-
-    return {
-        "success": True,
-        "rowsProcessed": len(records),
-        "message": "Data stored in database"
-    }
+    except Exception as e:
+        print("UPLOAD ERROR:", str(e))
+        return {
+            "success": False,
+            "message": f"Upload failed: {str(e)}"
+        }
 
 # ─── ANALYTICS ────────────────────────────────────────────────
 
 @app.get("/analytics")
 def analytics():
-    response = supabase.table("energy_data").select("*").execute()
-    data = response.data
+    try:
+        response = supabase.table("energy_data").select("*").execute()
+        data = response.data
 
-    if not data:
+        if not data:
+            return {
+                "stats": {
+                    "totalConsumption": 0,
+                    "avgDaily": 0,
+                    "peakDemand": 0,
+                    "peakDay": "N/A",
+                    "estimatedCost": 0,
+                    "baseload": 0,
+                    "daysOfData": 0,
+                    "trend": {
+                        "consumptionChange": 0,
+                        "costChange": 0
+                    }
+                },
+                "daily": [],
+                "weekly": [],
+                "monthly": []
+            }
+
+        df = pd.DataFrame(data)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+        df["date"] = df["timestamp"].dt.date
+        df["week"] = df["timestamp"].dt.isocalendar().week
+        df["month"] = df["timestamp"].dt.strftime("%b")
+
+        daily = df.groupby("date")["consumption"].sum().reset_index()
+        weekly = df.groupby("week")["consumption"].sum().reset_index()
+        monthly = df.groupby("month")["consumption"].sum().reset_index()
+
+        total_consumption = df["consumption"].sum()
+        avg_daily = daily["consumption"].mean()
+        peak_demand = df["consumption"].max()
+
         return {
             "stats": {
-                "totalConsumption": 0,
-                "avgDaily": 0,
-                "peakDemand": 0,
-                "peakDay": "N/A",
-                "estimatedCost": 0,
-                "baseload": 0,
-                "daysOfData": 0,
+                "totalConsumption": float(total_consumption),
+                "avgDaily": float(avg_daily),
+                "peakDemand": float(peak_demand),
+                "peakDay": str(daily.loc[daily["consumption"].idxmax(), "date"]),
+                "estimatedCost": float(total_consumption * 0.15),
+                "baseload": float(df["consumption"].quantile(0.1)),
+                "daysOfData": int(len(daily)),
                 "trend": {
                     "consumptionChange": 0,
                     "costChange": 0
                 }
             },
-            "daily": [],
-            "weekly": [],
-            "monthly": []
+            "daily": [
+                {"date": str(r["date"]), "label": str(r["date"]), "consumption": float(r["consumption"])}
+                for _, r in daily.iterrows()
+            ],
+            "weekly": [
+                {"week": f"Week {int(r['week'])}", "consumption": float(r["consumption"])}
+                for _, r in weekly.iterrows()
+            ],
+            "monthly": [
+                {"month": r["month"], "consumption": float(r["consumption"])}
+                for _, r in monthly.iterrows()
+            ]
         }
 
-    df = pd.DataFrame(data)
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-    df["date"] = df["timestamp"].dt.date
-    df["week"] = df["timestamp"].dt.isocalendar().week
-    df["month"] = df["timestamp"].dt.strftime("%b")
-
-    # Aggregations
-    daily = df.groupby("date")["consumption"].sum().reset_index()
-    weekly = df.groupby("week")["consumption"].sum().reset_index()
-    monthly = df.groupby("month")["consumption"].sum().reset_index()
-
-    total_consumption = df["consumption"].sum()
-    avg_daily = daily["consumption"].mean()
-    peak_demand = df["consumption"].max()
-
-    return {
-        "stats": {
-            "totalConsumption": float(total_consumption),
-            "avgDaily": float(avg_daily),
-            "peakDemand": float(peak_demand),
-            "peakDay": str(daily.loc[daily["consumption"].idxmax(), "date"]),
-            "estimatedCost": float(total_consumption * 0.15),
-            "baseload": float(df["consumption"].quantile(0.1)),
-            "daysOfData": int(len(daily)),
-            "trend": {
-                "consumptionChange": 0,
-                "costChange": 0
-            }
-        },
-        "daily": [
-            {"date": str(r["date"]), "label": str(r["date"]), "consumption": float(r["consumption"])}
-            for _, r in daily.iterrows()
-        ],
-        "weekly": [
-            {"week": f"Week {int(r['week'])}", "consumption": float(r["consumption"])}
-            for _, r in weekly.iterrows()
-        ],
-        "monthly": [
-            {"month": r["month"], "consumption": float(r["consumption"])}
-            for _, r in monthly.iterrows()
-        ]
-    }
+    except Exception as e:
+        print("ANALYTICS ERROR:", str(e))
+        return {"error": str(e)}
 
 # ─── ANOMALIES ────────────────────────────────────────────────
 
