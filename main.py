@@ -160,37 +160,42 @@ def analytics():
     else:
         trend = 0
 
-    # ─── HOURLY ──────────────────────────
-    hourly_df = df.groupby("hour")["consumption"].mean().reset_index()
+    # ─── HOURLY PROFILE (FIXED 24 HOURS) ───────────
+hourly_avg = df.groupby("hour")["consumption"].mean()
 
-    df["is_weekend"] = df["timestamp"].dt.weekday >= 5
-    weekday_avg = df[~df["is_weekend"]].groupby("hour")["consumption"].mean()
-    weekend_avg = df[df["is_weekend"]].groupby("hour")["consumption"].mean()
+df["is_weekend"] = df["timestamp"].dt.weekday >= 5
+weekday_avg = df[~df["is_weekend"]].groupby("hour")["consumption"].mean()
+weekend_avg = df[df["is_weekend"]].groupby("hour")["consumption"].mean()
 
-    hourly_profile = [
-        {
-            "hour": f"{int(r['hour']):02d}:00",
-            "average": float(r["consumption"]),
-            "weekday": float(weekday_avg.get(int(r["hour"]), 0)),
-            "weekend": float(weekend_avg.get(int(r["hour"]), 0))
-        }
-        for _, r in hourly_df.iterrows()
-    ]
+hourly_profile = []
 
-    # ─── HEATMAP ─────────────────────────
-    df["day"] = df["timestamp"].dt.weekday
-    heatmap_df = df.groupby(["day", "hour"])["consumption"].mean().reset_index()
-    max_val = heatmap_df["consumption"].max()
+for hour in range(24):  # FORCE 0–23
+    hourly_profile.append({
+        "hour": f"{hour:02d}:00",
+        "average": float(hourly_avg.get(hour, 0)),
+        "weekday": float(weekday_avg.get(hour, 0)),
+        "weekend": float(weekend_avg.get(hour, 0))
+    })
+    
+    # ─── HEATMAP FIX (FULL GRID) ───────────
+df["day"] = df["timestamp"].dt.weekday
 
-    heatmap = [
-        {
-            "day": int(r["day"]),
-            "hour": int(r["hour"]),
-            "value": float(r["consumption"]),
-            "intensity": float(r["consumption"] / max_val) if max_val else 0
-        }
-        for _, r in heatmap_df.iterrows()
-    ]
+heatmap_group = df.groupby(["day", "hour"])["consumption"].mean()
+
+max_val = heatmap_group.max() if len(heatmap_group) else 1
+
+heatmap = []
+
+for day in range(7):
+    for hour in range(24):
+        val = heatmap_group.get((day, hour), 0)
+
+        heatmap.append({
+            "day": day,
+            "hour": hour,
+            "value": float(val),
+            "intensity": float(val / max_val) if max_val else 0
+        })
 
     # ─── AI (basic for now) ───────────────
     ai = {
