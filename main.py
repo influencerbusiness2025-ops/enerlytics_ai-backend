@@ -194,3 +194,21 @@ def anomalies():
         "chartData": [],
         "avgDaily": 0
     }
+# ─── DELETE DATA ──────────────────────────────────────────────
+
+@app.delete("/delete-data")
+def delete_data():
+    try:
+        response = supabase.table("energy_data").delete().neq("id", "").execute()
+
+        return {
+            "success": True,
+            "message": "All data deleted successfully"
+        }
+
+    except Exception as e:
+        print("DELETE ERROR:", str(e))
+        return {
+            "success": False,
+            "message": str(e)
+        }
