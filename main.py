@@ -201,6 +201,54 @@ def anomalies():
         "chartData": [],
         "avgDaily": 0
     }
+# ─── DEBUG: DATA SUMMARY ──────────────────────────────────────
+
+@app.get("/debug/data-summary")
+def debug_data_summary():
+    try:
+        data = supabase.table("energy_data").select("*").execute().data
+
+        if not data:
+            return {
+                "rowCount": 0,
+                "dateRange": {"earliest": None, "latest": None},
+                "totalConsumption": 0,
+                "avgConsumption": 0,
+                "minConsumption": 0,
+                "maxConsumption": 0,
+                "peakDemand": 0,
+                "avgDaily": 0,
+            }
+
+        df = pd.DataFrame(data)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+        df = df.dropna(subset=["consumption"])
+
+        df["date"] = df["timestamp"].dt.date
+        unique_dates = df["date"].nunique()
+
+        total = float(df["consumption"].sum())
+        avg_daily = round(total / unique_dates, 2) if unique_dates else 0
+
+        return {
+            "rowCount": len(df),
+            "dateRange": {
+                "earliest": str(df["timestamp"].min()),
+                "latest": str(df["timestamp"].max()),
+            },
+            "totalConsumption": round(total, 2),
+            "avgConsumption": round(float(df["consumption"].mean()), 2),
+            "minConsumption": round(float(df["consumption"].min()), 2),
+            "maxConsumption": round(float(df["consumption"].max()), 2),
+            "peakDemand": round(float(df["consumption"].max()), 2),
+            "avgDaily": avg_daily,
+        }
+
+    except Exception as e:
+        print("DEBUG SUMMARY ERROR:", str(e))
+        return {"success": False, "message": str(e)}
+
 # ─── DELETE DATA ──────────────────────────────────────────────
 
 @app.delete("/delete-data")
