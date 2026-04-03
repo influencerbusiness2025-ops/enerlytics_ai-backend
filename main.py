@@ -139,14 +139,14 @@ def get_analytics():
     df["hour"] = df["timestamp"].dt.hour
 
     # ─── HOURLY PROFILE ───
-    hourly = df.groupby("hour")["consption"].mean().reset_index()
+    hourly = df.groupby("hour")["consumption"].mean().reset_index()
 
     hourly_profile = [
         {
             "hour": f"{int(row['hour']):02d}:00",
-            "average": round(row["consption"], 2),
-            "weekday": round(row["consption"], 2),
-            "weekend": round(row["consption"], 2),
+            "average": round(row["consumption"], 2),
+            "weekday": round(row["consumption"], 2),
+            "weekend": round(row["consumption"], 2),
         }
         for _, row in hourly.iterrows()
     ]
