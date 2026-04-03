@@ -163,9 +163,26 @@ def get_analytics():
         "avgDaily": round(avg * 24, 2),
     }
 
+    # ─── TOTAL CONSUMPTION ───
+    total_consumption = round(float(df["consumption"].sum()), 2)
+
+    # ─── DAILY BREAKDOWN ───
+    df["date"] = df["timestamp"].dt.date
+    daily = df.groupby("date")["consumption"].sum().reset_index()
+
+    daily_breakdown = [
+        {
+            "date": str(row["date"]),
+            "consumption": round(float(row["consumption"]), 2),
+        }
+        for _, row in daily.iterrows()
+    ]
+
     return {
         "stats": stats,
-        "hourlyProfile": hourly_profile
+        "hourlyProfile": hourly_profile,
+        "daily": daily_breakdown,
+        "totalConsumption": total_consumption,
     }
 # ─── ANOMALIES ────────────────────────────────────────────────
 
