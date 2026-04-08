@@ -140,15 +140,16 @@ def get_analytics():
 
     # ─── HOURLY PROFILE ───
     hourly = df.groupby("hour")["consumption"].mean().reset_index()
+    hourly_map = dict(zip(hourly["hour"], hourly["consumption"]))
 
     hourly_profile = [
         {
-            "hour": f"{int(row['hour']):02d}:00",
-            "average": round(row["consumption"], 2),
-            "weekday": round(row["consumption"], 2),
-            "weekend": round(row["consumption"], 2),
+            "hour": f"{h:02d}:00",
+            "average": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
+            "weekday": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
+            "weekend": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
         }
-        for _, row in hourly.iterrows()
+        for h in range(24)
     ]
 
     # ─── STATS ───
@@ -359,15 +360,16 @@ def get_gas_analytics():
 
     # ─── HOURLY PROFILE ───
     hourly = df.groupby("hour")["consumption"].mean().reset_index()
+    hourly_map = dict(zip(hourly["hour"], hourly["consumption"]))
 
     hourly_profile = [
         {
-            "hour": f"{int(row['hour']):02d}:00",
-            "average": round(row["consumption"], 2),
-            "weekday": round(row["consumption"], 2),
-            "weekend": round(row["consumption"], 2),
+            "hour": f"{h:02d}:00",
+            "average": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
+            "weekday": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
+            "weekend": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
         }
-        for _, row in hourly.iterrows()
+        for h in range(24)
     ]
 
     # ─── STATS ───
