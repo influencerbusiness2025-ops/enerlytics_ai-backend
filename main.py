@@ -184,6 +184,78 @@ def get_analytics():
         "daily": daily_breakdown,
         "totalConsumption": total_consumption,
     }
+# ─── HOURLY PROFILE BY YEAR ───────────────────────────────────
+
+@app.get("/analytics/hourly-profile/{year}")
+def get_hourly_profile_by_year(year: int):
+    try:
+        start_date = f"{year}-01-01"
+        end_date = f"{year}-12-31"
+
+        data = (
+            supabase.table("energy_data")
+            .select("timestamp, consumption")
+            .gte("timestamp", start_date)
+            .lte("timestamp", end_date)
+            .execute()
+            .data
+        )
+
+        if not data:
+            return {
+                "hourlyProfile": [
+                    {
+                        "hour": f"{h:02d}:00",
+                        "average": 0,
+                        "weekday": 0,
+                        "weekend": 0,
+                    }
+                    for h in range(24)
+                ]
+            }
+
+        df = pd.DataFrame(data)
+        df["timestamp"] = pd.to_datetime(df["timestamp"])
+        df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+        df = df.dropna(subset=["consumption"])
+
+        df["hour"] = df["timestamp"].dt.hour
+        # dayofweek: 0=Monday … 4=Friday → weekday; 5=Saturday, 6=Sunday → weekend
+        df["is_weekend"] = df["timestamp"].dt.dayofweek >= 5
+
+        hourly_profile = []
+        for h in range(24):
+            hour_df = df[df["hour"] == h]
+
+            if hour_df.empty:
+                hourly_profile.append(
+                    {"hour": f"{h:02d}:00", "average": 0, "weekday": 0, "weekend": 0}
+                )
+                continue
+
+            avg = hour_df["consumption"].mean()
+
+            weekday_df = hour_df[~hour_df["is_weekend"]]
+            weekend_df = hour_df[hour_df["is_weekend"]]
+
+            weekday_avg = weekday_df["consumption"].mean() if not weekday_df.empty else avg
+            weekend_avg = weekend_df["consumption"].mean() if not weekend_df.empty else avg
+
+            hourly_profile.append(
+                {
+                    "hour": f"{h:02d}:00",
+                    "average": round(float(avg), 2),
+                    "weekday": round(float(weekday_avg), 2),
+                    "weekend": round(float(weekend_avg), 2),
+                }
+            )
+
+        return {"hourlyProfile": hourly_profile}
+
+    except Exception as e:
+        print("HOURLY PROFILE BY YEAR ERROR:", str(e))
+        return {"success": False, "message": str(e)}
+
 # ─── UPLOAD GAS CSV ───────────────────────────────────────────
 
 @app.post("/upload-gas-data")
