@@ -131,26 +131,53 @@ def get_analytics():
             "hourlyProfile": []
         }
 
-    import pandas as pd
-
     df = pd.DataFrame(data)
 
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+    df = df.dropna(subset=["consumption"])
+
+    # ─── TIMEZONE: convert UTC → Europe/London ───
+    if df["timestamp"].dt.tz is None:
+        df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
+    df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/London")
+
     df["hour"] = df["timestamp"].dt.hour
+    # dayofweek: 0=Monday … 4=Friday → weekday; 5=Saturday, 6=Sunday → weekend
+    df["is_weekend"] = df["timestamp"].dt.dayofweek >= 5
+
+    # ─── DEBUG LOGGING ───
+    print(f"Hours in data: {sorted(df['hour'].unique())}")
+    print(f"Records per hour:\n{df.groupby('hour').size()}")
+    print(f"Sample timestamps (first 5):\n{df['timestamp'].head()}")
 
     # ─── HOURLY PROFILE ───
-    hourly = df.groupby("hour")["consumption"].mean().reset_index()
-    hourly_map = dict(zip(hourly["hour"], hourly["consumption"]))
+    hourly_profile = []
+    for h in range(24):
+        hour_df = df[df["hour"] == h]
 
-    hourly_profile = [
-        {
-            "hour": f"{h:02d}:00",
-            "average": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
-            "weekday": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
-            "weekend": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
-        }
-        for h in range(24)
-    ]
+        if hour_df.empty:
+            hourly_profile.append(
+                {"hour": f"{h:02d}:00", "average": 0, "weekday": 0, "weekend": 0}
+            )
+            continue
+
+        avg = hour_df["consumption"].mean()
+
+        weekday_df = hour_df[~hour_df["is_weekend"]]
+        weekend_df = hour_df[hour_df["is_weekend"]]
+
+        weekday_avg = weekday_df["consumption"].mean() if not weekday_df.empty else avg
+        weekend_avg = weekend_df["consumption"].mean() if not weekend_df.empty else avg
+
+        hourly_profile.append(
+            {
+                "hour": f"{h:02d}:00",
+                "average": round(float(avg), 2),
+                "weekday": round(float(weekday_avg), 2),
+                "weekend": round(float(weekend_avg), 2),
+            }
+        )
 
     # ─── STATS ───
     baseload = df["consumption"].quantile(0.1)
@@ -356,21 +383,50 @@ def get_gas_analytics():
     df = pd.DataFrame(data)
 
     df["timestamp"] = pd.to_datetime(df["timestamp"])
+    df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+    df = df.dropna(subset=["consumption"])
+
+    # ─── TIMEZONE: convert UTC → Europe/London ───
+    if df["timestamp"].dt.tz is None:
+        df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
+    df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/London")
+
     df["hour"] = df["timestamp"].dt.hour
+    # dayofweek: 0=Monday … 4=Friday → weekday; 5=Saturday, 6=Sunday → weekend
+    df["is_weekend"] = df["timestamp"].dt.dayofweek >= 5
+
+    # ─── DEBUG LOGGING ───
+    print(f"[gas] Hours in data: {sorted(df['hour'].unique())}")
+    print(f"[gas] Records per hour:\n{df.groupby('hour').size()}")
+    print(f"[gas] Sample timestamps (first 5):\n{df['timestamp'].head()}")
 
     # ─── HOURLY PROFILE ───
-    hourly = df.groupby("hour")["consumption"].mean().reset_index()
-    hourly_map = dict(zip(hourly["hour"], hourly["consumption"]))
+    hourly_profile = []
+    for h in range(24):
+        hour_df = df[df["hour"] == h]
 
-    hourly_profile = [
-        {
-            "hour": f"{h:02d}:00",
-            "average": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
-            "weekday": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
-            "weekend": round(float(hourly_map[h]), 2) if h in hourly_map else 0,
-        }
-        for h in range(24)
-    ]
+        if hour_df.empty:
+            hourly_profile.append(
+                {"hour": f"{h:02d}:00", "average": 0, "weekday": 0, "weekend": 0}
+            )
+            continue
+
+        avg = hour_df["consumption"].mean()
+
+        weekday_df = hour_df[~hour_df["is_weekend"]]
+        weekend_df = hour_df[hour_df["is_weekend"]]
+
+        weekday_avg = weekday_df["consumption"].mean() if not weekday_df.empty else avg
+        weekend_avg = weekend_df["consumption"].mean() if not weekend_df.empty else avg
+
+        hourly_profile.append(
+            {
+                "hour": f"{h:02d}:00",
+                "average": round(float(avg), 2),
+                "weekday": round(float(weekday_avg), 2),
+                "weekend": round(float(weekend_avg), 2),
+            }
+        )
 
     # ─── STATS ───
     baseload = df["consumption"].quantile(0.1)
