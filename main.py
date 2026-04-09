@@ -75,6 +75,8 @@ async def upload_data(file: UploadFile = File(...)):
         print(df_long.head(30).to_string())
         print(f"Unique time values (count): {df_long['time'].nunique()}")
         print(f"Time value counts:\n{df_long['time'].value_counts().head(30)}")
+        print(f"All unique time values in melted dataframe:")
+        print(sorted(df_long['time'].unique().tolist()))
 
 
         # Clean numeric
@@ -411,6 +413,9 @@ async def upload_gas_data(file: UploadFile = File(...)):
         # Clean numeric
         df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
         df_long = df_long.dropna(subset=["consumption"])
+
+        print(f"All unique time values in melted dataframe:")
+        print(sorted(df_long['time'].unique().tolist()))
 
         # Debug: sample time values before padding
         print("[gas] Sample time values before padding:", df_long["time"].head(10).tolist())
