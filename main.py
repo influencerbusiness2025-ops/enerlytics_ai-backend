@@ -574,6 +574,22 @@ def anomalies():
         "chartData": [],
         "avgDaily": 0
     }
+# ─── DEBUG: RAW TIMESTAMPS ────────────────────────────────────
+
+@app.get("/debug/raw-timestamps")
+def debug_raw_timestamps():
+    try:
+        data = supabase.table("energy_data").select("timestamp, consumption").limit(10).execute().data
+
+        return {
+            "count": len(data),
+            "raw_data": data,
+            "first_timestamp_type": type(data[0]["timestamp"]).__name__ if data else None,
+            "first_timestamp_value": data[0]["timestamp"] if data else None,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
 # ─── DEBUG: DATA SUMMARY ──────────────────────────────────────
 
 @app.get("/debug/data-summary")
