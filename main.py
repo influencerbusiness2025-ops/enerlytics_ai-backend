@@ -206,11 +206,27 @@ def get_analytics():
         for _, row in daily.iterrows()
     ]
 
+    # ─── HEATMAP (day of week × hour) ───
+    heatmap = [[0.0 for _ in range(24)] for _ in range(7)]
+    counts = [[0 for _ in range(24)] for _ in range(7)]
+
+    for _, row in df.iterrows():
+        day = row["timestamp"].dayofweek  # 0=Monday … 6=Sunday
+        hour = row["timestamp"].hour      # 0-23
+        heatmap[day][hour] += row["consumption"]
+        counts[day][hour] += 1
+
+    for day in range(7):
+        for hour in range(24):
+            if counts[day][hour] > 0:
+                heatmap[day][hour] = round(heatmap[day][hour] / counts[day][hour], 2)
+
     return {
         "stats": stats,
         "hourlyProfile": hourly_profile,
         "daily": daily_breakdown,
         "totalConsumption": total_consumption,
+        "heatmap": heatmap,
     }
 # ─── HOURLY PROFILE BY YEAR ───────────────────────────────────
 
