@@ -69,8 +69,12 @@ async def upload_data(file: UploadFile = File(...)):
         )
 
         # ─── DEBUG: post-melt diagnostics ───
-        print(f"DataFrame after melt (first 20 rows):\n{df_long.head(20)}")
-        print(f"Unique time values: {df_long['time'].unique()}")
+        print(f"Melted dataframe shape: {df_long.shape}")
+        print(f"Melted dataframe columns: {df_long.columns.tolist()}")
+        print(f"First 30 rows of melted data:")
+        print(df_long.head(30).to_string())
+        print(f"Unique time values (count): {df_long['time'].nunique()}")
+        print(f"Time value counts:\n{df_long['time'].value_counts().head(30)}")
 
 
         # Clean numeric
