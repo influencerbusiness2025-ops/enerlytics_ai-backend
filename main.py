@@ -130,13 +130,18 @@ async def upload_data(file: UploadFile = File(...)):
         print(f"[upload] Valid timestamps: {df_long['timestamp'].notna().sum()} / {len(df_long)}")
 
         df_long = df_long.dropna(subset=["timestamp"])
-        df_final = df_long[["timestamp", "consumption"]]
+
+        # Aggregate: sum all meters that share the same timestamp (handles multi-meter CSVs)
+        df_agg = df_long.groupby("timestamp", as_index=False)["consumption"].sum()
+
+        print(f"[upload] Rows before aggregation: {len(df_long)}, after: {len(df_agg)}")
+
+        df_final = df_agg.copy()
 
         if df_final.empty:
             return {"success": False, "message": "No valid data after processing"}
 
         # Store as naive ISO string — no UTC suffix, no tz info
-        df_final = df_final.copy()
         df_final["timestamp"] = df_final["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S")
         df_final["consumption"] = df_final["consumption"].astype(float)
 
@@ -302,7 +307,13 @@ async def upload_gas_data(file: UploadFile = File(...)):
         print(f"[gas-upload] Valid timestamps: {df_long['timestamp'].notna().sum()} / {len(df_long)}")
 
         df_long = df_long.dropna(subset=["timestamp"])
-        df_final = df_long[["timestamp", "consumption"]].copy()
+
+        # Aggregate: sum all meters that share the same timestamp (handles multi-meter CSVs)
+        df_agg = df_long.groupby("timestamp", as_index=False)["consumption"].sum()
+
+        print(f"[gas-upload] Rows before aggregation: {len(df_long)}, after: {len(df_agg)}")
+
+        df_final = df_agg.copy()
 
         if df_final.empty:
             return {"success": False, "message": "No valid data after processing"}
