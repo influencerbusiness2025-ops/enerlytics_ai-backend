@@ -132,29 +132,41 @@ def get_analytics():
         }
 
 
+    # ─── DEBUG: raw data from Supabase ───
+    print(f"Raw data from Supabase (first 3 rows): {data[:3]}")
+
     df = pd.DataFrame(data)
+
+    # ─── DEBUG: DataFrame shape and types ───
+    print(f"DataFrame shape: {df.shape}")
+    print(f"DataFrame dtypes:\n{df.dtypes}")
+    print(f"First 3 rows:\n{df.head(3)}")
 
     # ─── DEBUG: raw timestamps from DB ───
     print(f"Sample raw timestamps from DB (first 5):\n{df['timestamp'].head().tolist()}")
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-    print(f"Timestamps after UTC parsing (first 5):\n{df['timestamp'].head().tolist()}")
+
+    # ─── DEBUG: after UTC parsing ───
+    print(f"After UTC parsing (first 3):\n{df['timestamp'].head(3).tolist()}")
 
     df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
     df = df.dropna(subset=["consumption"])
 
     # ─── TIMEZONE: convert UTC → Europe/London ───
     df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/London")
-    print(f"Timestamps after Europe/London conversion (first 5):\n{df['timestamp'].head().tolist()}")
+
+    # ─── DEBUG: after Europe/London conversion ───
+    print(f"After Europe/London conversion (first 3):\n{df['timestamp'].head(3).tolist()}")
 
     df["hour"] = df["timestamp"].dt.hour
     # dayofweek: 0=Monday … 4=Friday → weekday; 5=Saturday, 6=Sunday → weekend
     df["is_weekend"] = df["timestamp"].dt.dayofweek >= 5
 
-    # ─── DEBUG LOGGING ───
-    print(f"Hours in data: {sorted(df['hour'].unique())}")
+    # ─── DEBUG: hour extraction ───
+    print(f"Hour column (first 10):\n{df['hour'].head(10).tolist()}")
+    print(f"Unique hours: {sorted(df['hour'].unique())}")
     print(f"Records per hour:\n{df.groupby('hour').size()}")
-
 
     # ─── HOURLY PROFILE ───
     hourly_profile = []
@@ -202,6 +214,17 @@ def get_analytics():
     # ─── DAILY BREAKDOWN ───
     df["date"] = df["timestamp"].dt.date
     daily = df.groupby("date")["consumption"].sum().reset_index()
+
+    # ─── DEBUG: per-day hourly aggregation ───
+    first_date = df["date"].iloc[0]
+    first_day_df = df[df["date"] == first_date]
+    print(f"First date: {first_date}")
+    print(f"Records for first date: {len(first_day_df)}")
+    print(f"Hours in first date: {sorted(first_day_df['hour'].unique())}")
+    for h in range(24):
+        hour_total = first_day_df[first_day_df["hour"] == h]["consumption"].sum()
+        if hour_total > 0:
+            print(f"  Hour {h}: {hour_total}")
 
     daily_breakdown = []
     for _, row in daily.iterrows():
