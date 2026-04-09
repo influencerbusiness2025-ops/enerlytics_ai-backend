@@ -198,13 +198,24 @@ def get_analytics():
     df["date"] = df["timestamp"].dt.date
     daily = df.groupby("date")["consumption"].sum().reset_index()
 
-    daily_breakdown = [
-        {
-            "date": str(row["date"]),
-            "consumption": round(float(row["consumption"]), 2),
-        }
-        for _, row in daily.iterrows()
-    ]
+    daily_breakdown = []
+    for _, row in daily.iterrows():
+        date_val = row["date"]
+        day_df = df[df["date"] == date_val]
+
+        # Build 24-element hourly array for this specific day
+        hourly_values = []
+        for h in range(24):
+            hour_total = day_df[day_df["hour"] == h]["consumption"].sum()
+            hourly_values.append(round(float(hour_total), 2))
+
+        daily_breakdown.append(
+            {
+                "date": str(date_val),
+                "consumption": round(float(row["consumption"]), 2),
+                "hourly": hourly_values,
+            }
+        )
 
     # ─── HEATMAP (day of week × hour) ───
     heatmap = [[0.0 for _ in range(24)] for _ in range(7)]
