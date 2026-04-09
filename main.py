@@ -53,6 +53,13 @@ async def upload_data(file: UploadFile = File(...)):
         if not time_columns:
             return {"success": False, "message": "No time columns found"}
 
+        # ─── DEBUG: pre-melt diagnostics ───
+        print(f"CSV columns: {df.columns.tolist()}")
+        print(f"Detected date column: {date_col}")
+        print(f"Detected time columns: {time_columns}")
+        print(f"Number of time columns: {len(time_columns)}")
+        print(f"DataFrame before melt (first 3 rows):\n{df.head(3)}")
+
         # Melt
         df_long = df.melt(
             id_vars=[date_col],
@@ -60,6 +67,11 @@ async def upload_data(file: UploadFile = File(...)):
             var_name="time",
             value_name="consumption"
         )
+
+        # ─── DEBUG: post-melt diagnostics ───
+        print(f"DataFrame after melt (first 20 rows):\n{df_long.head(20)}")
+        print(f"Unique time values: {df_long['time'].unique()}")
+
 
         # Clean numeric
         df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
