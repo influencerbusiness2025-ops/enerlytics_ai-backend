@@ -131,16 +131,21 @@ def get_analytics():
             "hourlyProfile": []
         }
 
+
     df = pd.DataFrame(data)
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    # ─── DEBUG: raw timestamps from DB ───
+    print(f"Sample raw timestamps from DB (first 5):\n{df['timestamp'].head().tolist()}")
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    print(f"Timestamps after UTC parsing (first 5):\n{df['timestamp'].head().tolist()}")
+
     df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
     df = df.dropna(subset=["consumption"])
 
     # ─── TIMEZONE: convert UTC → Europe/London ───
-    if df["timestamp"].dt.tz is None:
-        df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
     df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/London")
+    print(f"Timestamps after Europe/London conversion (first 5):\n{df['timestamp'].head().tolist()}")
 
     df["hour"] = df["timestamp"].dt.hour
     # dayofweek: 0=Monday … 4=Friday → weekday; 5=Saturday, 6=Sunday → weekend
@@ -149,7 +154,7 @@ def get_analytics():
     # ─── DEBUG LOGGING ───
     print(f"Hours in data: {sorted(df['hour'].unique())}")
     print(f"Records per hour:\n{df.groupby('hour').size()}")
-    print(f"Sample timestamps (first 5):\n{df['timestamp'].head()}")
+
 
     # ─── HOURLY PROFILE ───
     hourly_profile = []
@@ -270,18 +275,25 @@ def get_hourly_profile_by_year(year: int):
             }
 
         df = pd.DataFrame(data)
-        df["timestamp"] = pd.to_datetime(df["timestamp"])
+
+        # ─── DEBUG: raw timestamps from DB ───
+        print(f"Sample raw timestamps from DB (first 5):\n{df['timestamp'].head().tolist()}")
+
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        print(f"Timestamps after UTC parsing (first 5):\n{df['timestamp'].head().tolist()}")
+
         df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
         df = df.dropna(subset=["consumption"])
 
         # ─── TIMEZONE: convert UTC → Europe/London ───
-        if df["timestamp"].dt.tz is None:
-            df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
         df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/London")
+        print(f"Timestamps after Europe/London conversion (first 5):\n{df['timestamp'].head().tolist()}")
 
         df["hour"] = df["timestamp"].dt.hour
         # dayofweek: 0=Monday … 4=Friday → weekday; 5=Saturday, 6=Sunday → weekend
         df["is_weekend"] = df["timestamp"].dt.dayofweek >= 5
+
+        print(f"Hours in data: {sorted(df['hour'].unique())}")
 
         hourly_profile = []
         for h in range(24):
@@ -412,16 +424,21 @@ def get_gas_analytics():
             "totalConsumption": 0,
         }
 
+
     df = pd.DataFrame(data)
 
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    # ─── DEBUG: raw timestamps from DB ───
+    print(f"[gas] Sample raw timestamps from DB (first 5):\n{df['timestamp'].head().tolist()}")
+
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    print(f"[gas] Timestamps after UTC parsing (first 5):\n{df['timestamp'].head().tolist()}")
+
     df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
     df = df.dropna(subset=["consumption"])
 
     # ─── TIMEZONE: convert UTC → Europe/London ───
-    if df["timestamp"].dt.tz is None:
-        df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
     df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/London")
+    print(f"[gas] Timestamps after Europe/London conversion (first 5):\n{df['timestamp'].head().tolist()}")
 
     df["hour"] = df["timestamp"].dt.hour
     # dayofweek: 0=Monday … 4=Friday → weekday; 5=Saturday, 6=Sunday → weekend
@@ -430,9 +447,7 @@ def get_gas_analytics():
     # ─── DEBUG LOGGING ───
     print(f"[gas] Hours in data: {sorted(df['hour'].unique())}")
     print(f"[gas] Records per hour:\n{df.groupby('hour').size()}")
-    print(f"[gas] Sample timestamps (first 5):\n{df['timestamp'].head()}")
 
-    # ─── HOURLY PROFILE ───
     hourly_profile = []
     for h in range(24):
         hour_df = df[df["hour"] == h]
