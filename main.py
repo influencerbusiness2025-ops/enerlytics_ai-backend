@@ -41,7 +41,7 @@ def health():
 async def upload_data(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        df = pd.read_csv(StringIO(contents.decode("utf-8")))
+        df = pd.read_csv(StringIO(contents.decode("utf-8")), index_col=None)
 
         # Detect date column
         date_col = next((c for c in df.columns if "date" in c.lower()), None)
@@ -388,7 +388,7 @@ def get_hourly_profile_by_year(year: int):
 async def upload_gas_data(file: UploadFile = File(...)):
     try:
         contents = await file.read()
-        df = pd.read_csv(StringIO(contents.decode("utf-8")))
+        df = pd.read_csv(StringIO(contents.decode("utf-8")), index_col=None)
 
         # Detect date column
         date_col = next((c for c in df.columns if "date" in c.lower()), None)
