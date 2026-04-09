@@ -263,6 +263,11 @@ def get_hourly_profile_by_year(year: int):
         df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
         df = df.dropna(subset=["consumption"])
 
+        # ─── TIMEZONE: convert UTC → Europe/London ───
+        if df["timestamp"].dt.tz is None:
+            df["timestamp"] = df["timestamp"].dt.tz_localize("UTC")
+        df["timestamp"] = df["timestamp"].dt.tz_convert("Europe/London")
+
         df["hour"] = df["timestamp"].dt.hour
         # dayofweek: 0=Monday … 4=Friday → weekday; 5=Saturday, 6=Sunday → weekend
         df["is_weekend"] = df["timestamp"].dt.dayofweek >= 5
