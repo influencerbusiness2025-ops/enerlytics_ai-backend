@@ -83,16 +83,8 @@ async def upload_data(file: UploadFile = File(...)):
         df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
         df_long = df_long.dropna(subset=["consumption"])
 
-        # Debug: sample time values before padding
-        print("Sample time values before padding:", df_long["time"].head(10).tolist())
-
-        # Pad single-digit hours to HH:MM format (e.g. "0:00" → "00:00", "1:00" → "01:00")
-        df_long["time"] = df_long["time"].apply(
-            lambda x: f"{int(x.split(':')[0]):02d}:{x.split(':')[1]}"
-        )
-
-        # Debug: sample time values after padding
-        print("Sample time values after padding:", df_long["time"].head(10).tolist())
+        # Debug: sample time values
+        print("Sample time values:", df_long["time"].head(10).tolist())
 
         # Timestamp
         df_long["timestamp"] = pd.to_datetime(
@@ -417,16 +409,8 @@ async def upload_gas_data(file: UploadFile = File(...)):
         print(f"All unique time values in melted dataframe:")
         print(sorted(df_long['time'].unique().tolist()))
 
-        # Debug: sample time values before padding
-        print("[gas] Sample time values before padding:", df_long["time"].head(10).tolist())
-
-        # Pad single-digit hours to HH:MM format (e.g. "0:00" → "00:00", "1:00" → "01:00")
-        df_long["time"] = df_long["time"].apply(
-            lambda x: f"{int(x.split(':')[0]):02d}:{x.split(':')[1]}"
-        )
-
-        # Debug: sample time values after padding
-        print("[gas] Sample time values after padding:", df_long["time"].head(10).tolist())
+        # Debug: sample time values
+        print("[gas] Sample time values:", df_long["time"].head(10).tolist())
 
         # Timestamp
         df_long["timestamp"] = pd.to_datetime(
