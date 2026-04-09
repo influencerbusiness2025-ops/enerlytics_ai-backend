@@ -170,7 +170,7 @@ async def upload_data(file: UploadFile = File(...)):
 
 @app.get("/analytics")
 def get_analytics():
-    data = supabase.table("energy_data").select("*").execute().data
+    data = supabase.table("energy_data").select("*").range(0, 20000).execute().data
 
     if not data:
         return {
@@ -347,7 +347,7 @@ async def upload_gas_data(file: UploadFile = File(...)):
 
 @app.get("/gas-analytics")
 def get_gas_analytics():
-    data = supabase.table("gas_data").select("*").execute().data
+    data = supabase.table("gas_data").select("*").range(0, 20000).execute().data
 
     if not data:
         return {
@@ -394,7 +394,7 @@ def anomalies():
 @app.get("/debug/data-summary")
 def debug_data_summary():
     try:
-        data = supabase.table("energy_data").select("*").execute().data
+        data = supabase.table("energy_data").select("*").range(0, 20000).execute().data
         if not data:
             return {"rowCount": 0, "dateRange": {"earliest": None, "latest": None},
                     "totalConsumption": 0, "avgConsumption": 0, "minConsumption": 0,
@@ -433,7 +433,7 @@ def debug_data_summary():
 @app.get("/debug/gas-summary")
 def debug_gas_summary():
     try:
-        data = supabase.table("gas_data").select("*").execute().data
+        data = supabase.table("gas_data").select("*").range(0, 20000).execute().data
         if not data:
             return {"rowCount": 0, "dateRange": {"earliest": None, "latest": None},
                     "totalConsumption": 0, "avgConsumption": 0, "minConsumption": 0,
