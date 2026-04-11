@@ -1,5 +1,6 @@
 from fastapi import FastAPI, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 import pandas as pd
 from io import StringIO
 from supabase import create_client
@@ -29,42 +30,24 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ─── WEATHER NORMALISATION CONFIG ────────────────────────────
+# ─── PYDANTIC MODELS ──────────────────────────────────────────
 
-SITE_PROFILES = {
-    "rudding_park": {
-        "name": "Rudding Park, UK",
-        "lat": 53.98, "lng": -1.47,
-        "base_temp": 15.5, "mode": "both",
-        "timezone": "Europe/London",
-    },
-    "london": {
-        "name": "London, UK",
-        "lat": 51.51, "lng": -0.13,
-        "base_temp": 15.5, "mode": "both",
-        "timezone": "Europe/London",
-    },
-    "bangalore": {
-        "name": "Bangalore, India",
-        "lat": 12.97, "lng": 77.59,
-        "base_temp": 18.0, "mode": "cdd_only",
-        "timezone": "Asia/Kolkata",
-    },
-    "dubai": {
-        "name": "Dubai, UAE",
-        "lat": 25.20, "lng": 55.27,
-        "base_temp": 24.0, "mode": "cdd_only",
-        "timezone": "Asia/Dubai",
-    },
-}
+class SiteCreate(BaseModel):
+    name: str
+    lat: float
+    lng: float
+    timezone: str = "UTC"
+    base_temp: float = 15.5
+    mode: str = "auto"
+    address: str = ""
+    building_type: str = "commercial"
 
 # ─── HELPERS ──────────────────────────────────────────────────
 
 def parse_timestamps_naive(df: pd.DataFrame) -> pd.DataFrame:
     """
     Parse timestamps stored as naive local wall-clock strings.
-    NO utc=True, NO tz_convert — the strings are already in Europe/London time.
-    e.g. "2024-01-16 08:30:00" stays as 08:30, not shifted to 09:30.
+    NO utc=True, NO tz_convert — the strings are already in local time.
     """
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.dropna(subset=["timestamp"])
@@ -112,8 +95,27 @@ def build_stats(df: pd.DataFrame) -> dict:
     }
 
 
+def auto_base_temp(lat: float, current_base: float) -> float:
+    """Auto-adjust base temp for tropical/arid latitudes if left at UK default."""
+    if current_base == 15.5 and abs(lat) < 23.5:
+        return 24.0 if abs(lat) < 15 else 18.0
+    return current_base
+
+
+def resolve_mode(mode: str, lat: float, base_temp: float) -> str:
+    """Resolve 'auto' mode to actual HDD/CDD mode based on location."""
+    if mode != "auto":
+        return mode
+    if base_temp >= 22 or abs(lat) < 15:
+        return "cdd_only"
+    if base_temp >= 18 or abs(lat) < 23.5:
+        return "cdd_only"
+    return "both"
+
+
 async def fetch_degree_days(lat: float, lng: float, base_temp: float,
                              start_date: str, end_date: str) -> dict:
+    """Fetch daily mean temps from Open-Meteo and compute HDD/CDD. Free, global, no API key."""
     url = (
         f"https://archive-api.open-meteo.com/v1/archive"
         f"?latitude={lat}&longitude={lng}"
@@ -124,6 +126,7 @@ async def fetch_degree_days(lat: float, lng: float, base_temp: float,
         resp = await client.get(url)
         resp.raise_for_status()
         data = resp.json()
+
     result = {}
     for date, temp in zip(data["daily"]["time"], data["daily"]["temperature_2m_mean"]):
         if temp is None:
@@ -137,6 +140,7 @@ async def fetch_degree_days(lat: float, lng: float, base_temp: float,
 
 
 def estimate_sensitivity(consumption: list, hdd: list, cdd: list, mode: str) -> tuple:
+    """OLS regression to estimate kWh sensitivity per degree-day."""
     n = len(consumption)
     if n < 7:
         return 0.0, 0.0, float(np.mean(consumption)) if consumption else 0.0
@@ -163,6 +167,216 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+# ─── SITES CRUD ───────────────────────────────────────────────
+
+@app.get("/analytics/sites")
+def get_sites():
+    try:
+        result = (
+            supabase.table("sites")
+            .select("id, name, lat, lng, timezone, base_temp, mode, address, building_type")
+            .eq("is_active", True)
+            .order("name")
+            .execute()
+        )
+        return {"sites": result.data or []}
+    except Exception as e:
+        print("GET SITES ERROR:", str(e))
+        return {"success": False, "message": str(e)}
+
+
+@app.post("/analytics/sites")
+def create_site(site: SiteCreate):
+    try:
+        base_temp = auto_base_temp(site.lat, site.base_temp)
+        payload = {
+            "name":          site.name,
+            "lat":           site.lat,
+            "lng":           site.lng,
+            "timezone":      site.timezone,
+            "base_temp":     base_temp,
+            "mode":          site.mode,
+            "address":       site.address,
+            "building_type": site.building_type,
+            "is_active":     True,
+        }
+        result = supabase.table("sites").insert(payload).execute()
+        return {"success": True, "site": result.data[0] if result.data else None}
+    except Exception as e:
+        print("CREATE SITE ERROR:", str(e))
+        return {"success": False, "message": str(e)}
+
+
+@app.put("/analytics/sites/{site_id}")
+def update_site(site_id: str, site: SiteCreate):
+    try:
+        payload = {
+            "name":          site.name,
+            "lat":           site.lat,
+            "lng":           site.lng,
+            "timezone":      site.timezone,
+            "base_temp":     site.base_temp,
+            "mode":          site.mode,
+            "address":       site.address,
+            "building_type": site.building_type,
+        }
+        result = (
+            supabase.table("sites")
+            .update(payload)
+            .eq("id", site_id)
+            .execute()
+        )
+        return {"success": True, "site": result.data[0] if result.data else None}
+    except Exception as e:
+        print("UPDATE SITE ERROR:", str(e))
+        return {"success": False, "message": str(e)}
+
+
+@app.delete("/analytics/sites/{site_id}")
+def delete_site(site_id: str):
+    try:
+        supabase.table("sites").update({"is_active": False}).eq("id", site_id).execute()
+        return {"success": True, "deleted": site_id}
+    except Exception as e:
+        print("DELETE SITE ERROR:", str(e))
+        return {"success": False, "message": str(e)}
+
+# ─── WEATHER NORMALISED ───────────────────────────────────────
+
+@app.get("/analytics/weather-normalised")
+async def get_weather_normalised(
+    site_id: str = Query(..., description="UUID from /analytics/sites"),
+    start_date: Optional[str] = Query(default=None),
+    end_date: Optional[str] = Query(default=None),
+):
+    try:
+        # Load site from DB — works for any site anywhere in the world
+        site_result = (
+            supabase.table("sites")
+            .select("*")
+            .eq("id", site_id)
+            .eq("is_active", True)
+            .single()
+            .execute()
+        )
+        if not site_result.data:
+            return {"success": False, "message": f"Site '{site_id}' not found"}
+
+        site = site_result.data
+        base_temp = site["base_temp"]
+        mode = resolve_mode(site["mode"], site["lat"], base_temp)
+
+        today = datetime.utcnow().date()
+        if not end_date:
+            end_date = str(today - timedelta(days=1))
+        if not start_date:
+            start_date = str(today - timedelta(days=31))
+
+        # Pull energy data
+        data = (
+            supabase.table("energy_data")
+            .select("timestamp, consumption")
+            .gte("timestamp", start_date)
+            .lte("timestamp", end_date + "T23:59:59")
+            .range(0, 20000)
+            .execute()
+            .data
+        )
+        if not data:
+            return {"success": False, "message": "No energy data for date range"}
+
+        df = pd.DataFrame(data)
+        df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+        df = df.dropna(subset=["consumption"])
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
+        df = df.dropna(subset=["timestamp"])
+        df["date"] = df["timestamp"].dt.date.astype(str)
+
+        daily_df = df.groupby("date")["consumption"].sum().reset_index()
+        daily_df.columns = ["date", "actual"]
+        daily_df = daily_df.sort_values("date").reset_index(drop=True)
+
+        if daily_df.empty:
+            return {"success": False, "message": "No daily data after aggregation"}
+
+        actual_start = daily_df["date"].min()
+        actual_end   = daily_df["date"].max()
+
+        # Fetch weather from Open-Meteo (free, global, no key needed)
+        degree_days = await fetch_degree_days(
+            lat=site["lat"], lng=site["lng"],
+            base_temp=base_temp,
+            start_date=actual_start, end_date=actual_end,
+        )
+
+        rows = []
+        for _, row in daily_df.iterrows():
+            date = row["date"]
+            dd = degree_days.get(date, {"hdd": 0.0, "cdd": 0.0, "mean_temp": None})
+            rows.append({
+                "date":      date,
+                "actual":    float(row["actual"]),
+                "hdd":       dd["hdd"],
+                "cdd":       dd["cdd"],
+                "mean_temp": dd["mean_temp"],
+            })
+
+        beta_h, beta_c, baseload = estimate_sensitivity(
+            [r["actual"] for r in rows],
+            [r["hdd"]    for r in rows],
+            [r["cdd"]    for r in rows],
+            mode,
+        )
+        print(f"[weather-norm] site={site['name']} β_h={beta_h:.2f} β_c={beta_c:.2f} baseload={baseload:.1f}")
+
+        results = []
+        for r in rows:
+            weather_impact = round((r["hdd"] * beta_h) + (r["cdd"] * beta_c), 1)
+            results.append({
+                "date":          r["date"],
+                "actual":        round(r["actual"], 1),
+                "normalised":    round(r["actual"] - weather_impact, 1),
+                "weatherImpact": weather_impact,
+                "hdd":           r["hdd"],
+                "cdd":           r["cdd"],
+                "meanTemp":      r["mean_temp"],
+            })
+
+        total_actual     = round(sum(r["actual"]        for r in results), 1)
+        total_normalised = round(sum(r["normalised"]    for r in results), 1)
+        total_weather    = round(sum(r["weatherImpact"] for r in results), 1)
+
+        return {
+            "site": {
+                "id":       site["id"],
+                "name":     site["name"],
+                "baseTemp": base_temp,
+                "mode":     mode,
+                "lat":      site["lat"],
+                "lng":      site["lng"],
+            },
+            "dateRange": {"start": actual_start, "end": actual_end},
+            "coefficients": {
+                "beta_h":   round(beta_h, 3),
+                "beta_c":   round(beta_c, 3),
+                "baseload": round(baseload, 1),
+            },
+            "summary": {
+                "totalActual":        total_actual,
+                "totalNormalised":    total_normalised,
+                "totalWeatherImpact": total_weather,
+                "weatherImpactPct":   round(total_weather / total_actual * 100, 1) if total_actual else 0,
+            },
+            "daily": results,
+        }
+
+    except httpx.RequestError as e:
+        print(f"[weather-norm] Open-Meteo fetch failed: {e}")
+        return {"success": False, "message": f"Weather API error: {str(e)}"}
+    except Exception as e:
+        print(f"[weather-norm] ERROR: {e}")
+        return {"success": False, "message": str(e)}
 
 # ─── UPLOAD CSV ───────────────────────────────────────────────
 
@@ -203,7 +417,6 @@ async def upload_data(file: UploadFile = File(...)):
         print(f"[upload] Valid timestamps: {df_long['timestamp'].notna().sum()} / {len(df_long)}")
 
         df_long = df_long.dropna(subset=["timestamp"])
-
         df_agg = df_long.groupby("timestamp", as_index=False)["consumption"].sum()
 
         print(f"[upload] Rows before aggregation: {len(df_long)}, after: {len(df_agg)}")
@@ -227,11 +440,7 @@ async def upload_data(file: UploadFile = File(...)):
                 print("SUPABASE ERROR:", response.error)
                 return {"success": False, "message": f"Supabase error: {response.error}"}
 
-        return {
-            "success": True,
-            "rowsProcessed": len(records),
-            "message": "Data stored in database"
-        }
+        return {"success": True, "rowsProcessed": len(records), "message": "Data stored in database"}
 
     except Exception as e:
         print("UPLOAD ERROR:", str(e))
@@ -333,124 +542,6 @@ def get_hourly_profile_by_year(year: int):
         print("HOURLY PROFILE BY YEAR ERROR:", str(e))
         return {"success": False, "message": str(e)}
 
-# ─── WEATHER NORMALISED ───────────────────────────────────────
-
-@app.get("/analytics/weather-normalised")
-async def get_weather_normalised(
-    site_id: str = Query(default="rudding_park"),
-    start_date: Optional[str] = Query(default=None),
-    end_date: Optional[str] = Query(default=None),
-):
-    try:
-        site = SITE_PROFILES.get(site_id)
-        if not site:
-            return {"success": False, "message": f"Unknown site_id '{site_id}'. Available: {list(SITE_PROFILES.keys())}"}
-
-        today = datetime.utcnow().date()
-        if not end_date:
-            end_date = str(today - timedelta(days=1))
-        if not start_date:
-            start_date = str(today - timedelta(days=31))
-
-        data = (
-            supabase.table("energy_data")
-            .select("timestamp, consumption")
-            .gte("timestamp", start_date)
-            .lte("timestamp", end_date + "T23:59:59")
-            .range(0, 20000)
-            .execute()
-            .data
-        )
-        if not data:
-            return {"success": False, "message": "No energy data for date range"}
-
-        df = pd.DataFrame(data)
-        df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
-        df = df.dropna(subset=["consumption"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
-        df = df.dropna(subset=["timestamp"])
-        df["date"] = df["timestamp"].dt.date.astype(str)
-
-        daily_df = df.groupby("date")["consumption"].sum().reset_index()
-        daily_df.columns = ["date", "actual"]
-        daily_df = daily_df.sort_values("date").reset_index(drop=True)
-
-        if daily_df.empty:
-            return {"success": False, "message": "No daily data after aggregation"}
-
-        actual_start = daily_df["date"].min()
-        actual_end   = daily_df["date"].max()
-
-        degree_days = await fetch_degree_days(
-            lat=site["lat"], lng=site["lng"],
-            base_temp=site["base_temp"],
-            start_date=actual_start, end_date=actual_end,
-        )
-
-        rows = []
-        for _, row in daily_df.iterrows():
-            date = row["date"]
-            dd = degree_days.get(date, {"hdd": 0.0, "cdd": 0.0, "mean_temp": None})
-            rows.append({
-                "date": date, "actual": float(row["actual"]),
-                "hdd": dd["hdd"], "cdd": dd["cdd"], "mean_temp": dd["mean_temp"],
-            })
-
-        beta_h, beta_c, baseload = estimate_sensitivity(
-            [r["actual"] for r in rows],
-            [r["hdd"]    for r in rows],
-            [r["cdd"]    for r in rows],
-            site["mode"],
-        )
-        print(f"[weather-norm] site={site_id} β_h={beta_h:.2f} β_c={beta_c:.2f} baseload={baseload:.1f}")
-
-        results = []
-        for r in rows:
-            weather_impact = round((r["hdd"] * beta_h) + (r["cdd"] * beta_c), 1)
-            results.append({
-                "date":          r["date"],
-                "actual":        round(r["actual"], 1),
-                "normalised":    round(r["actual"] - weather_impact, 1),
-                "weatherImpact": weather_impact,
-                "hdd":           r["hdd"],
-                "cdd":           r["cdd"],
-                "meanTemp":      r["mean_temp"],
-            })
-
-        total_actual     = round(sum(r["actual"]        for r in results), 1)
-        total_normalised = round(sum(r["normalised"]    for r in results), 1)
-        total_weather    = round(sum(r["weatherImpact"] for r in results), 1)
-
-        return {
-            "site": {"id": site_id, "name": site["name"],
-                     "baseTemp": site["base_temp"], "mode": site["mode"]},
-            "dateRange": {"start": actual_start, "end": actual_end},
-            "coefficients": {"beta_h": round(beta_h, 3), "beta_c": round(beta_c, 3),
-                             "baseload": round(baseload, 1)},
-            "summary": {
-                "totalActual":        total_actual,
-                "totalNormalised":    total_normalised,
-                "totalWeatherImpact": total_weather,
-                "weatherImpactPct":   round(total_weather / total_actual * 100, 1) if total_actual else 0,
-            },
-            "daily": results,
-        }
-
-    except httpx.RequestError as e:
-        print(f"[weather-norm] Open-Meteo fetch failed: {e}")
-        return {"success": False, "message": f"Weather API error: {str(e)}"}
-    except Exception as e:
-        print(f"[weather-norm] ERROR: {e}")
-        return {"success": False, "message": str(e)}
-
-# ─── SITES ────────────────────────────────────────────────────
-
-@app.get("/analytics/sites")
-def get_sites():
-    return {"sites": [{"id": k, "name": v["name"], "baseTemp": v["base_temp"],
-                        "mode": v["mode"], "timezone": v["timezone"]}
-                       for k, v in SITE_PROFILES.items()]}
-
 # ─── UPLOAD GAS CSV ───────────────────────────────────────────
 
 @app.post("/upload-gas-data")
@@ -489,7 +580,6 @@ async def upload_gas_data(file: UploadFile = File(...)):
         print(f"[gas-upload] Valid timestamps: {df_long['timestamp'].notna().sum()} / {len(df_long)}")
 
         df_long = df_long.dropna(subset=["timestamp"])
-
         df_agg = df_long.groupby("timestamp", as_index=False)["consumption"].sum()
 
         print(f"[gas-upload] Rows before aggregation: {len(df_long)}, after: {len(df_agg)}")
@@ -513,11 +603,7 @@ async def upload_gas_data(file: UploadFile = File(...)):
                 print("SUPABASE GAS ERROR:", response.error)
                 return {"success": False, "message": f"Supabase error: {response.error}"}
 
-        return {
-            "success": True,
-            "rowsProcessed": len(records),
-            "message": "Gas data stored in database"
-        }
+        return {"success": True, "rowsProcessed": len(records), "message": "Gas data stored in database"}
 
     except Exception as e:
         print("GAS UPLOAD ERROR:", str(e))
@@ -651,6 +737,7 @@ def delete_data():
     except Exception as e:
         print("DELETE ERROR:", str(e))
         return {"success": False, "message": str(e)}
+
 
 @app.delete("/delete-gas-data")
 def delete_gas_data():
