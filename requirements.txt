@@ -5,3 +5,5 @@ python-multipart
 openpyxl
 supabase
 pytz
+httpx
+numpy
