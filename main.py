@@ -403,10 +403,11 @@ def get_anomalies(
 
         df["date"]         = df["timestamp"].dt.date.astype(str)
         df["hour"]         = df["timestamp"].dt.hour
-        df["dow"]          = df["timestamp"].dt.dayofweek        # 0=Mon, 6=Sun
-        df["hour_of_week"] = df["dow"] * 24 + df["hour"]        # 0–167
+        df["dow"]          = df["timestamp"].dt.dayofweek       # 0=Mon, 6=Sun
+        df["hour_of_week"] = df["dow"] * 24 + df["hour"]       # 0–167
 
         # ── 2. Baseline: median per hour-of-week slot ─────────
+        # Median is more robust than mean — won't be skewed by the anomalies themselves
         baseline = (
             df.groupby("hour_of_week")["consumption"]
             .median()
@@ -414,7 +415,7 @@ def get_anomalies(
         )
         df["expected"] = df["hour_of_week"].map(baseline)
 
-        # ── 3. Std deviation per slot for dynamic thresholds ──
+        # ── 3. Std deviation per slot ─────────────────────────
         std_map = (
             df.groupby("hour_of_week")["consumption"]
             .std()
@@ -423,8 +424,8 @@ def get_anomalies(
         )
         df["std"] = df["hour_of_week"].map(std_map)
 
-        # ── 4. Detect anomalies ───────────────────────────────
-        # Must exceed BOTH: > 2 std deviations AND > 25% from baseline
+        # ── 4. Detect anomalies — tiered thresholds ───────────
+        # Works for regular datasets (hotels, offices) where consumption is stable
         anomalies = []
 
         for _, row in df.iterrows():
@@ -438,15 +439,26 @@ def get_anomalies(
             deviation_pct = ((actual - expected) / expected) * 100
             std_deviation = (actual - expected) / std if std > 0 else 0
 
-            if abs(std_deviation) < 2.0 or abs(deviation_pct) < 25:
+            abs_std = abs(std_deviation)
+            abs_pct = abs(deviation_pct)
+
+            # Tier 1: strong statistical signal
+            if abs_std >= 3.0 and abs_pct >= 20:
+                pass
+            # Tier 2: moderate statistical + meaningful percentage
+            elif abs_std >= 2.0 and abs_pct >= 30:
+                pass
+            # Tier 3: large percentage swing in otherwise quiet slot
+            elif abs_std >= 1.5 and abs_pct >= 50:
+                pass
+            else:
                 continue
 
             a_type = "spike" if actual > expected else "drop"
 
-            abs_std = abs(std_deviation)
-            if abs_std >= 4.0:
+            if abs_std >= 3.0 or abs_pct >= 100:
                 sev = "high"
-            elif abs_std >= 3.0:
+            elif abs_std >= 2.0 or abs_pct >= 50:
                 sev = "medium"
             else:
                 sev = "low"
@@ -467,17 +479,16 @@ def get_anomalies(
             })
 
         # ── 5. Apply filters ──────────────────────────────────
-        filtered = anomalies
+        filtered = list(anomalies)
         if severity:
             filtered = [a for a in filtered if a["severity"] == severity.lower()]
         if anomaly_type:
             filtered = [a for a in filtered if a["type"] == anomaly_type.lower()]
 
-        # Sort: highest severity first, then most recent
         sev_order = {"high": 0, "medium": 1, "low": 2}
         filtered.sort(key=lambda x: (sev_order[x["severity"]], x["timestamp"]))
 
-        # ── 6. Summary counts ─────────────────────────────────
+        # ── 6. Summary counts (always from full unfiltered list) ─
         summary = {
             "total":  len(anomalies),
             "high":   sum(1 for a in anomalies if a["severity"] == "high"),
@@ -489,10 +500,10 @@ def get_anomalies(
 
         # ── 7. Chart data: daily totals + anomaly markers ─────
         daily = df.groupby("date")["consumption"].sum().reset_index()
+
         anomaly_dates = {}
         for a in anomalies:
             d = a["date"]
-            # Keep highest severity per date
             if d not in anomaly_dates or sev_order[a["severity"]] < sev_order[anomaly_dates[d]["sev"]]:
                 anomaly_dates[d] = {"sev": a["severity"]}
 
@@ -514,6 +525,9 @@ def get_anomalies(
 
         # ── 9. Average daily consumption ──────────────────────
         avg_daily = round(float(df.groupby("date")["consumption"].sum().mean()), 2)
+
+        print(f"[anomalies] Scanned {len(df)} rows → {len(anomalies)} anomalies "
+              f"(high={summary['high']}, medium={summary['medium']}, low={summary['low']})")
 
         return {
             "anomalies":    filtered,
