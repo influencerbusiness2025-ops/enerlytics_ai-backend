@@ -45,10 +45,6 @@ class SiteCreate(BaseModel):
 # ─── HELPERS ──────────────────────────────────────────────────
 
 def parse_timestamps_naive(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Parse timestamps stored as naive local wall-clock strings.
-    NO utc=True, NO tz_convert — the strings are already in local time.
-    """
     df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce")
     df = df.dropna(subset=["timestamp"])
     print(f"  Parsed timestamps (first 3): {df['timestamp'].head(3).tolist()}")
@@ -57,23 +53,19 @@ def parse_timestamps_naive(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_hourly_profile(df: pd.DataFrame) -> list:
-    """Build 24-slot hourly profile with weekday/weekend split."""
     df["hour"] = df["timestamp"].dt.hour
     df["is_weekend"] = df["timestamp"].dt.dayofweek >= 5
-
     hourly_profile = []
     for h in range(24):
         hour_df = df[df["hour"] == h]
         if hour_df.empty:
             hourly_profile.append({"hour": f"{h:02d}:00", "average": 0, "weekday": 0, "weekend": 0})
             continue
-
         avg = hour_df["consumption"].mean()
         weekday_df = hour_df[~hour_df["is_weekend"]]
         weekend_df = hour_df[hour_df["is_weekend"]]
         weekday_avg = weekday_df["consumption"].mean() if not weekday_df.empty else avg
         weekend_avg = weekend_df["consumption"].mean() if not weekend_df.empty else avg
-
         hourly_profile.append({
             "hour": f"{h:02d}:00",
             "average": round(float(avg), 2),
@@ -96,14 +88,12 @@ def build_stats(df: pd.DataFrame) -> dict:
 
 
 def auto_base_temp(lat: float, current_base: float) -> float:
-    """Auto-adjust base temp for tropical/arid latitudes if left at UK default."""
     if current_base == 15.5 and abs(lat) < 23.5:
         return 24.0 if abs(lat) < 15 else 18.0
     return current_base
 
 
 def resolve_mode(mode: str, lat: float, base_temp: float) -> str:
-    """Resolve 'auto' mode to actual HDD/CDD mode based on location."""
     if mode != "auto":
         return mode
     if base_temp >= 22 or abs(lat) < 15:
@@ -115,7 +105,6 @@ def resolve_mode(mode: str, lat: float, base_temp: float) -> str:
 
 async def fetch_degree_days(lat: float, lng: float, base_temp: float,
                              start_date: str, end_date: str) -> dict:
-    """Fetch daily mean temps from Open-Meteo and compute HDD/CDD. Free, global, no API key."""
     url = (
         f"https://archive-api.open-meteo.com/v1/archive"
         f"?latitude={lat}&longitude={lng}"
@@ -126,7 +115,6 @@ async def fetch_degree_days(lat: float, lng: float, base_temp: float,
         resp = await client.get(url)
         resp.raise_for_status()
         data = resp.json()
-
     result = {}
     for date, temp in zip(data["daily"]["time"], data["daily"]["temperature_2m_mean"]):
         if temp is None:
@@ -140,7 +128,6 @@ async def fetch_degree_days(lat: float, lng: float, base_temp: float,
 
 
 def estimate_sensitivity(consumption: list, hdd: list, cdd: list, mode: str) -> tuple:
-    """OLS regression to estimate kWh sensitivity per degree-day."""
     n = len(consumption)
     if n < 7:
         return 0.0, 0.0, float(np.mean(consumption)) if consumption else 0.0
@@ -251,7 +238,6 @@ async def get_weather_normalised(
     end_date: Optional[str] = Query(default=None),
 ):
     try:
-        # Load site from DB — works for any site anywhere in the world
         site_result = (
             supabase.table("sites")
             .select("*")
@@ -273,7 +259,6 @@ async def get_weather_normalised(
         if not start_date:
             start_date = str(today - timedelta(days=31))
 
-        # Pull energy data
         data = (
             supabase.table("energy_data")
             .select("timestamp, consumption")
@@ -303,7 +288,6 @@ async def get_weather_normalised(
         actual_start = daily_df["date"].min()
         actual_end   = daily_df["date"].max()
 
-        # Fetch weather from Open-Meteo (free, global, no key needed)
         degree_days = await fetch_degree_days(
             lat=site["lat"], lng=site["lng"],
             base_temp=base_temp,
@@ -378,6 +362,172 @@ async def get_weather_normalised(
         print(f"[weather-norm] ERROR: {e}")
         return {"success": False, "message": str(e)}
 
+# ─── ANOMALIES ────────────────────────────────────────────────
+
+@app.get("/anomalies")
+def get_anomalies(
+    days: int = Query(default=90, ge=7, le=365, description="Days of history to scan"),
+    severity: Optional[str] = Query(default=None, description="Filter: high, medium, low"),
+    anomaly_type: Optional[str] = Query(default=None, description="Filter: spike, drop"),
+):
+    try:
+        # ── 1. Load data ──────────────────────────────────────
+        end_dt   = datetime.utcnow()
+        start_dt = end_dt - timedelta(days=days)
+
+        data = (
+            supabase.table("energy_data")
+            .select("timestamp, consumption")
+            .gte("timestamp", start_dt.strftime("%Y-%m-%dT%H:%M:%S"))
+            .lte("timestamp", end_dt.strftime("%Y-%m-%dT%H:%M:%S"))
+            .range(0, 20000)
+            .execute()
+            .data
+        )
+
+        if not data:
+            return {
+                "anomalies": [],
+                "summary": {"total": 0, "high": 0, "medium": 0, "low": 0, "spikes": 0, "drops": 0},
+                "chartData": [],
+                "avgDaily": 0,
+                "heatmap": [[0] * 24 for _ in range(7)],
+                "totalScanned": 0,
+            }
+
+        df = pd.DataFrame(data)
+        df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+        df = df.dropna(subset=["consumption"])
+        df = parse_timestamps_naive(df)
+        df = df.sort_values("timestamp").reset_index(drop=True)
+
+        df["date"]         = df["timestamp"].dt.date.astype(str)
+        df["hour"]         = df["timestamp"].dt.hour
+        df["dow"]          = df["timestamp"].dt.dayofweek        # 0=Mon, 6=Sun
+        df["hour_of_week"] = df["dow"] * 24 + df["hour"]        # 0–167
+
+        # ── 2. Baseline: median per hour-of-week slot ─────────
+        baseline = (
+            df.groupby("hour_of_week")["consumption"]
+            .median()
+            .to_dict()
+        )
+        df["expected"] = df["hour_of_week"].map(baseline)
+
+        # ── 3. Std deviation per slot for dynamic thresholds ──
+        std_map = (
+            df.groupby("hour_of_week")["consumption"]
+            .std()
+            .fillna(0)
+            .to_dict()
+        )
+        df["std"] = df["hour_of_week"].map(std_map)
+
+        # ── 4. Detect anomalies ───────────────────────────────
+        # Must exceed BOTH: > 2 std deviations AND > 25% from baseline
+        anomalies = []
+
+        for _, row in df.iterrows():
+            expected = row["expected"]
+            actual   = row["consumption"]
+            std      = row["std"]
+
+            if expected == 0:
+                continue
+
+            deviation_pct = ((actual - expected) / expected) * 100
+            std_deviation = (actual - expected) / std if std > 0 else 0
+
+            if abs(std_deviation) < 2.0 or abs(deviation_pct) < 25:
+                continue
+
+            a_type = "spike" if actual > expected else "drop"
+
+            abs_std = abs(std_deviation)
+            if abs_std >= 4.0:
+                sev = "high"
+            elif abs_std >= 3.0:
+                sev = "medium"
+            else:
+                sev = "low"
+
+            anomalies.append({
+                "timestamp":     row["timestamp"].strftime("%Y-%m-%dT%H:%M:%S"),
+                "date":          row["date"],
+                "hour":          int(row["hour"]),
+                "hourLabel":     f"{int(row['hour']):02d}:00",
+                "actual":        round(float(actual), 2),
+                "expected":      round(float(expected), 2),
+                "deviationPct":  round(float(deviation_pct), 1),
+                "stdDeviations": round(float(std_deviation), 2),
+                "severity":      sev,
+                "type":          a_type,
+                "dow":           int(row["dow"]),
+                "dowLabel":      ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"][int(row["dow"])],
+            })
+
+        # ── 5. Apply filters ──────────────────────────────────
+        filtered = anomalies
+        if severity:
+            filtered = [a for a in filtered if a["severity"] == severity.lower()]
+        if anomaly_type:
+            filtered = [a for a in filtered if a["type"] == anomaly_type.lower()]
+
+        # Sort: highest severity first, then most recent
+        sev_order = {"high": 0, "medium": 1, "low": 2}
+        filtered.sort(key=lambda x: (sev_order[x["severity"]], x["timestamp"]))
+
+        # ── 6. Summary counts ─────────────────────────────────
+        summary = {
+            "total":  len(anomalies),
+            "high":   sum(1 for a in anomalies if a["severity"] == "high"),
+            "medium": sum(1 for a in anomalies if a["severity"] == "medium"),
+            "low":    sum(1 for a in anomalies if a["severity"] == "low"),
+            "spikes": sum(1 for a in anomalies if a["type"] == "spike"),
+            "drops":  sum(1 for a in anomalies if a["type"] == "drop"),
+        }
+
+        # ── 7. Chart data: daily totals + anomaly markers ─────
+        daily = df.groupby("date")["consumption"].sum().reset_index()
+        anomaly_dates = {}
+        for a in anomalies:
+            d = a["date"]
+            # Keep highest severity per date
+            if d not in anomaly_dates or sev_order[a["severity"]] < sev_order[anomaly_dates[d]["sev"]]:
+                anomaly_dates[d] = {"sev": a["severity"]}
+
+        chart_data = []
+        for _, row in daily.iterrows():
+            d = str(row["date"])
+            chart_data.append({
+                "date":         d,
+                "consumption":  round(float(row["consumption"]), 2),
+                "hasAnomaly":   d in anomaly_dates,
+                "anomalySev":   anomaly_dates[d]["sev"] if d in anomaly_dates else None,
+                "anomalyCount": sum(1 for a in anomalies if a["date"] == d),
+            })
+
+        # ── 8. Anomaly heatmap: dow × hour ────────────────────
+        heatmap = [[0] * 24 for _ in range(7)]
+        for a in anomalies:
+            heatmap[a["dow"]][a["hour"]] += 1
+
+        # ── 9. Average daily consumption ──────────────────────
+        avg_daily = round(float(df.groupby("date")["consumption"].sum().mean()), 2)
+
+        return {
+            "anomalies":    filtered,
+            "summary":      summary,
+            "chartData":    chart_data,
+            "avgDaily":     avg_daily,
+            "heatmap":      heatmap,
+            "totalScanned": len(df),
+        }
+
+    except Exception as e:
+        print("ANOMALIES ERROR:", str(e))
+        return {"success": False, "message": str(e)}
+
 # ─── UPLOAD CSV ───────────────────────────────────────────────
 
 @app.post("/upload-data")
@@ -395,7 +545,6 @@ async def upload_data(file: UploadFile = File(...)):
             return {"success": False, "message": "No time columns found"}
 
         print(f"[upload] date_col={date_col}, time_columns count={len(time_columns)}")
-        print(f"[upload] Sample time columns: {time_columns[:5]}")
 
         df_long = df.melt(
             id_vars=[date_col],
@@ -413,14 +562,8 @@ async def upload_data(file: UploadFile = File(...)):
             errors="coerce"
         )
 
-        print(f"[upload] Sample timestamps: {df_long['timestamp'].head(5).tolist()}")
-        print(f"[upload] Valid timestamps: {df_long['timestamp'].notna().sum()} / {len(df_long)}")
-
         df_long = df_long.dropna(subset=["timestamp"])
         df_agg = df_long.groupby("timestamp", as_index=False)["consumption"].sum()
-
-        print(f"[upload] Rows before aggregation: {len(df_long)}, after: {len(df_agg)}")
-
         df_final = df_agg.copy()
 
         if df_final.empty:
@@ -430,14 +573,12 @@ async def upload_data(file: UploadFile = File(...)):
         df_final["consumption"] = df_final["consumption"].astype(float)
 
         records = df_final.to_dict(orient="records")
-        print(f"[upload] Total rows to insert: {len(records)}")
 
         batch_size = 500
         for i in range(0, len(records), batch_size):
             batch = records[i:i + batch_size]
             response = supabase.table("energy_data").insert(batch).execute()
             if hasattr(response, "error") and response.error:
-                print("SUPABASE ERROR:", response.error)
                 return {"success": False, "message": f"Supabase error: {response.error}"}
 
         return {"success": True, "rowsProcessed": len(records), "message": "Data stored in database"}
@@ -535,7 +676,6 @@ def get_hourly_profile_by_year(year: int):
         df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
         df = df.dropna(subset=["consumption"])
         df = parse_timestamps_naive(df)
-
         return {"hourlyProfile": build_hourly_profile(df)}
 
     except Exception as e:
@@ -568,22 +708,14 @@ async def upload_gas_data(file: UploadFile = File(...)):
         df_long["consumption"] = pd.to_numeric(df_long["consumption"], errors="coerce")
         df_long = df_long.dropna(subset=["consumption"])
 
-        print(f"[gas-upload] Sample time values: {df_long['time'].head(5).tolist()}")
-
         df_long["timestamp"] = pd.to_datetime(
             df_long[date_col].astype(str) + " " + df_long["time"].astype(str),
             dayfirst=True,
             errors="coerce"
         )
 
-        print(f"[gas-upload] Sample timestamps: {df_long['timestamp'].head(5).tolist()}")
-        print(f"[gas-upload] Valid timestamps: {df_long['timestamp'].notna().sum()} / {len(df_long)}")
-
         df_long = df_long.dropna(subset=["timestamp"])
         df_agg = df_long.groupby("timestamp", as_index=False)["consumption"].sum()
-
-        print(f"[gas-upload] Rows before aggregation: {len(df_long)}, after: {len(df_agg)}")
-
         df_final = df_agg.copy()
 
         if df_final.empty:
@@ -593,14 +725,12 @@ async def upload_gas_data(file: UploadFile = File(...)):
         df_final["consumption"] = df_final["consumption"].astype(float)
 
         records = df_final.to_dict(orient="records")
-        print(f"[gas-upload] Total rows to insert: {len(records)}")
 
         batch_size = 500
         for i in range(0, len(records), batch_size):
             batch = records[i:i + batch_size]
             response = supabase.table("gas_data").insert(batch).execute()
             if hasattr(response, "error") and response.error:
-                print("SUPABASE GAS ERROR:", response.error)
                 return {"success": False, "message": f"Supabase error: {response.error}"}
 
         return {"success": True, "rowsProcessed": len(records), "message": "Gas data stored in database"}
@@ -642,17 +772,6 @@ def get_gas_analytics():
         "totalConsumption": round(float(df["consumption"].sum()), 2),
     }
 
-# ─── ANOMALIES ────────────────────────────────────────────────
-
-@app.get("/anomalies")
-def anomalies():
-    return {
-        "anomalies": [],
-        "summary": {"total": 0, "high": 0, "medium": 0, "low": 0, "spikes": 0, "drops": 0},
-        "chartData": [],
-        "avgDaily": 0
-    }
-
 # ─── DEBUG: DATA SUMMARY ──────────────────────────────────────
 
 @app.get("/debug/data-summary")
@@ -671,8 +790,6 @@ def debug_data_summary():
         df["date"] = df["timestamp"].dt.date
 
         hour_dist = df.groupby(df["timestamp"].dt.hour)["consumption"].count().to_dict()
-        print(f"[debug] Hour distribution: {hour_dist}")
-
         unique_dates = df["date"].nunique()
         total = float(df["consumption"].sum())
         return {
