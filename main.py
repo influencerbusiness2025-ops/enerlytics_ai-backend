@@ -67,40 +67,96 @@ class CheckoutRequest(BaseModel):
 # ─── TIER CONFIG ──────────────────────────────────────────────
 
 TIER_FEATURES = {
-    "trial": [
-        "dashboard","analytics","anomalies","upload_data","ai_insights",
-        "ai_recommendations","ai_data_analyst","ai_senior_consultant",
-        "weather_normalisation","report_basic","report_ai_insights",
-        "report_full","report_premium_full","settings_sites","multi_site","api_access"
-    ],
-    "basic": [
-        "dashboard","analytics","anomalies","upload_data",
-        "report_basic","settings_sites"
-    ],
-    "standard": [
-        "dashboard","analytics","anomalies","upload_data",
-        "ai_insights","ai_recommendations","weather_normalisation",
-        "report_basic","report_ai_insights","report_full",
-        "settings_sites","multi_site"
-    ],
-    "premium": [
-        "dashboard","analytics","anomalies","upload_data",
-        "ai_insights","ai_recommendations","ai_data_analyst",
-        "weather_normalisation","report_basic","report_ai_insights",
-        "report_full","report_premium_full","settings_sites","multi_site","api_access"
-    ],
-    "custom": [
-        "dashboard","analytics","anomalies","upload_data",
-        "ai_insights","ai_recommendations","ai_data_analyst","ai_senior_consultant",
-        "weather_normalisation","report_basic","report_ai_insights",
-        "report_full","report_premium_full","settings_sites","multi_site","api_access"
-    ],
-    "enterprise": [
-        "dashboard","analytics","anomalies","upload_data",
-        "ai_insights","ai_recommendations","ai_data_analyst","ai_senior_consultant",
-        "weather_normalisation","report_basic","report_ai_insights",
-        "report_full","report_premium_full","settings_sites","multi_site","api_access"
-    ],
+    "trial": {
+        "dashboard": True,
+        "analytics": True,
+        "anomalies": True,
+        "upload_data": True,
+        "ai_insights": True,
+        "ai_recommendations": True,
+        "ai_energy_analyst": True,
+        "ai_senior_consultant": False,
+        "weather_normalisation": True,
+        "report_basic": True,
+        "report_ai_insights": True,
+        "report_full": True,
+        "report_premium_full": True,
+        "settings_sites": True,
+        "multi_site": False,
+        "api_access": False,
+    },
+    "basic": {
+        "dashboard": True,
+        "analytics": True,
+        "anomalies": True,
+        "upload_data": True,
+        "ai_insights": False,
+        "ai_recommendations": False,
+        "ai_energy_analyst": False,
+        "ai_senior_consultant": False,
+        "weather_normalisation": False,
+        "report_basic": True,
+        "report_ai_insights": False,
+        "report_full": False,
+        "report_premium_full": False,
+        "settings_sites": True,
+        "multi_site": False,
+        "api_access": False,
+    },
+    "standard": {
+        "dashboard": True,
+        "analytics": True,
+        "anomalies": True,
+        "upload_data": True,
+        "ai_insights": True,
+        "ai_recommendations": True,
+        "ai_energy_analyst": False,
+        "ai_senior_consultant": False,
+        "weather_normalisation": True,
+        "report_basic": True,
+        "report_ai_insights": True,
+        "report_full": True,
+        "report_premium_full": False,
+        "settings_sites": True,
+        "multi_site": True,
+        "api_access": False,
+    },
+    "premium": {
+        "dashboard": True,
+        "analytics": True,
+        "anomalies": True,
+        "upload_data": True,
+        "ai_insights": True,
+        "ai_recommendations": True,
+        "ai_energy_analyst": True,
+        "ai_senior_consultant": False,
+        "weather_normalisation": True,
+        "report_basic": True,
+        "report_ai_insights": True,
+        "report_full": True,
+        "report_premium_full": True,
+        "settings_sites": True,
+        "multi_site": True,
+        "api_access": True,
+    },
+    "enterprise": {
+        "dashboard": True,
+        "analytics": True,
+        "anomalies": True,
+        "upload_data": True,
+        "ai_insights": True,
+        "ai_recommendations": True,
+        "ai_energy_analyst": True,
+        "ai_senior_consultant": True,
+        "weather_normalisation": True,
+        "report_basic": True,
+        "report_ai_insights": True,
+        "report_full": True,
+        "report_premium_full": True,
+        "settings_sites": True,
+        "multi_site": True,
+        "api_access": True,
+    },
 }
 
 FEATURE_REQUIRED_TIER = {
@@ -109,11 +165,11 @@ FEATURE_REQUIRED_TIER = {
     "weather_normalisation": "standard",
     "report_ai_insights":    "standard",
     "report_full":           "standard",
-    "ai_data_analyst":       "premium",
-    "report_premium_full":   "premium",
     "multi_site":            "standard",
+    "ai_energy_analyst":     "premium",
+    "report_premium_full":   "premium",
     "api_access":            "premium",
-    "ai_senior_consultant":  "custom",
+    "ai_senior_consultant":  "enterprise",
 }
 
 STRIPE_PRICE_MAP = {
@@ -143,7 +199,7 @@ def get_org_for_user(auth_id):
         org = result.data.get("organisations", {})
         if org.get("tier") == "trial":
             from datetime import timezone
-            trial_expires = org.get("trial_expires_at")
+            trial_expires = org.get("trial_ends_at")
             if trial_expires:
                 expires_dt = datetime.fromisoformat(trial_expires.replace("Z", "+00:00"))
                 if expires_dt < datetime.now(timezone.utc):
@@ -163,25 +219,30 @@ def require_auth(authorization):
     return auth_user, org
 
 def get_org_tier_by_id(org_id):
-    if not org_id: return "premium"
+    if not org_id: return "basic"
     try:
-        result = supabase.table("organisations").select("tier,trial_expires_at").eq("id",org_id).single().execute()
+        result = supabase.table("organisations").select("tier,trial_ends_at").eq("id",org_id).single().execute()
         if not result.data: return "basic"
         org = result.data
         if org.get("tier") == "trial":
             from datetime import timezone
-            trial_expires = org.get("trial_expires_at")
+            trial_expires = org.get("trial_ends_at")
             if trial_expires:
                 expires_dt = datetime.fromisoformat(trial_expires.replace("Z","+00:00"))
                 if expires_dt < datetime.now(timezone.utc):
                     supabase.table("organisations").update({"tier":"basic"}).eq("id",org_id).execute()
                     return "basic"
-        return org.get("tier","basic")
+        tier = org.get("tier", "basic")
+        # Fallback for unknown tiers
+        if tier not in TIER_FEATURES:
+            tier = "basic"
+        return tier
     except Exception: return "basic"
 
 def require_feature(org_id, feature):
     tier = get_org_tier_by_id(org_id)
-    if feature not in TIER_FEATURES.get(tier, []):
+    features = TIER_FEATURES.get(tier, {})
+    if not features.get(feature, False):
         required = FEATURE_REQUIRED_TIER.get(feature, "standard")
         raise HTTPException(status_code=403, detail={
             "error":"upgrade_required",
@@ -516,7 +577,7 @@ def build_data_analyst_prompt(elec, gas, today):
 Today's date: {today}
 
 YOUR ROLE:
-You analyse this building's energy data, compare against industry benchmarks for similar buildings, and provide practical operational recommendations. You do NOT provide legal, compliance, or strategic consultancy advice — for that, users should upgrade to the Custom plan or contact Effictra Energy directly.
+You analyse this building's energy data, compare against industry benchmarks for similar buildings, and provide practical operational recommendations. You do NOT provide legal, compliance, or strategic consultancy advice — for that, users should upgrade to the Enterprise plan or contact Effictra Energy directly.
 
 YOUR EXPERTISE:
 - Analysing energy consumption patterns (hourly, daily, monthly, seasonal)
@@ -551,14 +612,14 @@ HOW TO RESPOND:
 - Compare data against benchmarks where relevant
 - Give practical, actionable recommendations with estimated savings
 - Keep answers focused on data analysis and operational improvements
-- If asked about ESOS, ISO 50001, procurement strategy, net zero policy, or funding applications — briefly acknowledge the question but explain that detailed compliance and strategic consultancy is available on the Custom plan via Effictra Energy
+- If asked about ESOS, ISO 50001, procurement strategy, net zero policy, or funding applications — briefly acknowledge the question but explain that detailed compliance and strategic consultancy is available on the Enterprise plan via Effictra Energy
 - Format: **bold** for key numbers, bullet points for lists
 - Be helpful, specific and data-driven"""
 
 
 def build_senior_consultant_prompt(elec, gas, today):
-    """Custom tier — AI Senior Energy Consultant. Full expertise."""
-    return f"""You are Effictra AI Senior Energy Consultant — a senior energy consultant with 20+ years of experience, provided exclusively on the Effictra AI Custom plan by Effictra Energy (effictraenergy.co.uk).
+    """Enterprise tier — AI Senior Energy Consultant. Full expertise."""
+    return f"""You are Effictra AI Senior Energy Consultant — a senior energy consultant with 20+ years of experience, provided exclusively on the Effictra AI Enterprise plan by Effictra Energy (effictraenergy.co.uk).
 
 Today's date: {today}
 
@@ -670,22 +731,26 @@ def health(): return {"status": "ok"}
 def get_me(authorization: Optional[str]=Header(default=None)):
     auth_user,org=require_auth(authorization)
     tier=get_effective_tier(org)
+    features=TIER_FEATURES.get(tier,{})
     return {"user":{"id":str(auth_user.id),"email":auth_user.email},"org":org,
-            "tier":tier,"features":TIER_FEATURES.get(tier,[]),
-            "trial_expires_at":org.get("trial_expires_at") if org else None}
+            "tier":tier,"features":features,
+            "trial_ends_at":org.get("trial_ends_at") if org else None}
 
 @app.get("/tier")
 def get_tier(org_id: Optional[str]=Query(default=None),
              authorization: Optional[str]=Header(default=None)):
     if authorization and authorization.startswith("Bearer "):
         try:
-            auth_user,org=require_auth(authorization); tier=get_effective_tier(org)
-            return {"tier":tier,"features":TIER_FEATURES.get(tier,[]),
-                    "trial_expires_at":org.get("trial_expires_at") if org else None,
+            auth_user,org=require_auth(authorization)
+            tier=get_effective_tier(org)
+            features=TIER_FEATURES.get(tier,{})
+            return {"tier":tier,"features":features,
+                    "trial_ends_at":org.get("trial_ends_at") if org else None,
                     "upgrade_url":f"{FRONTEND_URL}/pricing"}
         except HTTPException: pass
     tier=get_org_tier_by_id(org_id)
-    return {"tier":tier,"features":TIER_FEATURES.get(tier,[]),"upgrade_url":f"{FRONTEND_URL}/pricing"}
+    features=TIER_FEATURES.get(tier,{})
+    return {"tier":tier,"features":features,"upgrade_url":f"{FRONTEND_URL}/pricing"}
 
 @app.get("/feature-flags")
 def get_feature_flags(org_id: Optional[str]=Query(default=None),
@@ -695,9 +760,8 @@ def get_feature_flags(org_id: Optional[str]=Query(default=None),
         try: _,org=require_auth(authorization); tier=get_effective_tier(org)
         except HTTPException: tier=get_org_tier_by_id(org_id)
     else: tier=get_org_tier_by_id(org_id)
-    allowed=TIER_FEATURES.get(tier,[])
-    all_features=set(f for fl in TIER_FEATURES.values() for f in fl)
-    return {"tier":tier,"flags":{f:f in allowed for f in all_features}}
+    features=TIER_FEATURES.get(tier,{})
+    return {"tier":tier,"flags":features}
 
 # ─── STRIPE ───────────────────────────────────────────────────
 
@@ -784,7 +848,7 @@ async def stripe_webhook(request: Request):
 def get_subscription(org_id: str=Query(...)):
     try:
         result=supabase.table("subscriptions").select("*").eq("org_id",org_id).eq("status","active").order("created_at",desc=True).limit(1).execute()
-        org=supabase.table("organisations").select("tier,trial_expires_at,stripe_customer_id").eq("id",org_id).single().execute().data
+        org=supabase.table("organisations").select("tier,trial_ends_at,stripe_customer_id").eq("id",org_id).single().execute().data
         return {"subscription":result.data[0] if result.data else None,"org":org}
     except Exception as e: return {"success":False,"message":str(e)}
 
@@ -1020,26 +1084,24 @@ def get_ai_insights_history():
         return {"history":result.data or []}
     except Exception as e: return {"success":False,"message":str(e)}
 
-# ─── AI DATA ANALYST (PREMIUM) ────────────────────────────────
+# ─── AI ANALYST ───────────────────────────────────────────────
 
 @app.post("/ai/analyst/chat")
 async def ai_analyst_chat(req: ChatRequest,
                            authorization: Optional[str]=Header(default=None)):
     """
-    Premium tier: AI Data Analyst — site data, benchmarking, best practices.
-    Custom tier: AI Senior Consultant — full expertise including compliance, procurement, net zero.
+    Premium tier: AI Energy Analyst — site data, benchmarking, best practices.
+    Enterprise tier: AI Senior Consultant — full expertise including compliance, procurement, net zero.
     """
-    # Check at least premium access
-    require_feature(req.org_id,"ai_data_analyst")
+    require_feature(req.org_id, "ai_energy_analyst")
 
     try:
         stats=build_energy_summary_for_ai()
         elec=stats.get("electricity",{}); gas=stats.get("gas",{})
         today=datetime.utcnow().strftime("%Y-%m-%d")
 
-        # Choose system prompt based on tier
         tier=get_org_tier_by_id(req.org_id)
-        if tier in ("custom","enterprise"):
+        if tier == "enterprise":
             system=build_senior_consultant_prompt(elec,gas,today)
             print(f"[analyst] Using SENIOR CONSULTANT prompt (tier={tier})")
         else:
@@ -1057,7 +1119,7 @@ async def ai_analyst_chat(req: ChatRequest,
 
 @app.get("/ai/analyst/conversations")
 def get_conversations(org_id: str=Query(...)):
-    require_feature(org_id,"ai_data_analyst")
+    require_feature(org_id,"ai_energy_analyst")
     try:
         result=supabase.table("ai_conversations").select("id,title,created_at,updated_at").eq("org_id",org_id).order("updated_at",desc=True).limit(20).execute()
         return {"conversations":result.data or []}
