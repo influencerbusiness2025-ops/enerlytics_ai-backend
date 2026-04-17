@@ -251,6 +251,29 @@ def require_feature(org_id, feature):
             "upgrade_url":f"{FRONTEND_URL}/pricing"
         })
 
+def resolve_tier(authorization, org_id):
+    """Resolve tier from JWT first, fall back to org_id. Returns (tier, org)."""
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            _, org = require_auth(authorization)
+            return get_effective_tier(org), org
+        except HTTPException:
+            pass
+    return get_org_tier_by_id(org_id), None
+
+def require_feature_jwt(authorization, org_id, feature):
+    """Check feature access preferring JWT auth over org_id."""
+    tier, _ = resolve_tier(authorization, org_id)
+    features = TIER_FEATURES.get(tier, {})
+    if not features.get(feature, False):
+        required = FEATURE_REQUIRED_TIER.get(feature, "standard")
+        raise HTTPException(status_code=403, detail={
+            "error":"upgrade_required",
+            "message":f"This feature requires the {required} plan.",
+            "current_tier":tier,"required_tier":required,
+            "upgrade_url":f"{FRONTEND_URL}/pricing"
+        })
+
 # ─── ENERGY HELPERS ───────────────────────────────────────────
 
 def parse_timestamps_naive(df):
@@ -755,13 +778,17 @@ def get_tier(org_id: Optional[str]=Query(default=None),
 @app.get("/feature-flags")
 def get_feature_flags(org_id: Optional[str]=Query(default=None),
                       authorization: Optional[str]=Header(default=None)):
-    tier="basic"
+    tier="basic"; org=None
     if authorization and authorization.startswith("Bearer "):
-        try: _,org=require_auth(authorization); tier=get_effective_tier(org)
-        except HTTPException: tier=get_org_tier_by_id(org_id)
-    else: tier=get_org_tier_by_id(org_id)
-    features=TIER_FEATURES.get(tier,{})
-    return {"tier":tier,"flags":features}
+        try:
+            _,org=require_auth(authorization)
+            tier=get_effective_tier(org)
+        except HTTPException:
+            if org_id: tier=get_org_tier_by_id(org_id)
+    elif org_id:
+        tier=get_org_tier_by_id(org_id)
+    features=TIER_FEATURES.get(tier, TIER_FEATURES["basic"])
+    return {"tier":tier,"flags":features,"trial_ends_at":org.get("trial_ends_at") if org else None}
 
 # ─── STRIPE ───────────────────────────────────────────────────
 
@@ -894,8 +921,9 @@ def delete_site(site_id: str):
 
 @app.get("/analytics/weather-normalised")
 async def get_weather_normalised(site_id: str=Query(...),org_id: Optional[str]=Query(default=None),
-    start_date: Optional[str]=Query(default=None),end_date: Optional[str]=Query(default=None)):
-    require_feature(org_id,"weather_normalisation")
+    start_date: Optional[str]=Query(default=None),end_date: Optional[str]=Query(default=None),
+    authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization,org_id,"weather_normalisation")
     try:
         site=supabase.table("sites").select("*").eq("id",site_id).eq("is_active",True).single().execute().data
         if not site: return {"success":False,"message":"Site not found"}
@@ -1054,8 +1082,9 @@ async def run_ai_generation():
         if row_id: supabase.table("ai_insights").update({"status":"error","error_message":str(e)}).eq("id",row_id).execute()
 
 @app.get("/ai/insights")
-def get_ai_insights(org_id: Optional[str]=Query(default=None)):
-    require_feature(org_id,"ai_insights")
+def get_ai_insights(org_id: Optional[str]=Query(default=None),
+                    authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization,org_id,"ai_insights")
     try:
         result=supabase.table("ai_insights").select("*").eq("status","complete").order("generated_at",desc=True).limit(1).execute()
         if not result.data:
@@ -1071,8 +1100,9 @@ def get_ai_insights(org_id: Optional[str]=Query(default=None)):
 
 @app.post("/ai/insights/generate")
 async def trigger_ai_generation(background_tasks: BackgroundTasks,
-                                 org_id: Optional[str]=Query(default=None)):
-    require_feature(org_id,"ai_insights")
+                                 org_id: Optional[str]=Query(default=None),
+                                 authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization,org_id,"ai_insights")
     if not ANTHROPIC_API_KEY: return {"success":False,"message":"ANTHROPIC_API_KEY not configured"}
     background_tasks.add_task(run_ai_generation)
     return {"success":True,"message":"Generation started"}
@@ -1093,14 +1123,14 @@ async def ai_analyst_chat(req: ChatRequest,
     Premium tier: AI Energy Analyst — site data, benchmarking, best practices.
     Enterprise tier: AI Senior Consultant — full expertise including compliance, procurement, net zero.
     """
-    require_feature(req.org_id, "ai_energy_analyst")
+    require_feature_jwt(authorization, req.org_id, "ai_energy_analyst")
 
     try:
         stats=build_energy_summary_for_ai()
         elec=stats.get("electricity",{}); gas=stats.get("gas",{})
         today=datetime.utcnow().strftime("%Y-%m-%d")
 
-        tier=get_org_tier_by_id(req.org_id)
+        tier, _ = resolve_tier(authorization, req.org_id)
         if tier == "enterprise":
             system=build_senior_consultant_prompt(elec,gas,today)
             print(f"[analyst] Using SENIOR CONSULTANT prompt (tier={tier})")
@@ -1118,8 +1148,8 @@ async def ai_analyst_chat(req: ChatRequest,
         print(f"[analyst] ERROR: {e}"); return {"success":False,"message":str(e)}
 
 @app.get("/ai/analyst/conversations")
-def get_conversations(org_id: str=Query(...)):
-    require_feature(org_id,"ai_energy_analyst")
+def get_conversations(org_id: str=Query(...), authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization,org_id,"ai_energy_analyst")
     try:
         result=supabase.table("ai_conversations").select("id,title,created_at,updated_at").eq("org_id",org_id).order("updated_at",desc=True).limit(20).execute()
         return {"conversations":result.data or []}
@@ -1178,9 +1208,9 @@ def build_report_data(date_from,date_to,report_type):
     return report
 
 @app.post("/reports/generate")
-def generate_report(req: ReportRequest):
+def generate_report(req: ReportRequest, authorization: Optional[str]=Header(default=None)):
     feature_map={"basic":"report_basic","ai_insights":"report_ai_insights","full":"report_full","premium_full":"report_premium_full"}
-    require_feature(req.org_id,feature_map.get(req.report_type,"report_basic"))
+    require_feature_jwt(authorization,req.org_id,feature_map.get(req.report_type,"report_basic"))
     try:
         data=build_report_data(req.date_from,req.date_to,req.report_type)
         titles={"basic":"Basic Energy Report","ai_insights":"AI Insights Report","full":"Full Energy Report","premium_full":"Premium Full Report"}
@@ -1214,9 +1244,10 @@ def delete_report(report_id: str):
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.get("/reports/preview/{report_type}")
-def preview_report(report_type: str,date_from: str=Query(...),date_to: str=Query(...),org_id: Optional[str]=Query(default=None)):
+def preview_report(report_type: str,date_from: str=Query(...),date_to: str=Query(...),
+                   org_id: Optional[str]=Query(default=None),authorization: Optional[str]=Header(default=None)):
     feature_map={"basic":"report_basic","ai_insights":"report_ai_insights","full":"report_full","premium_full":"report_premium_full"}
-    require_feature(org_id,feature_map.get(report_type,"report_basic"))
+    require_feature_jwt(authorization,org_id,feature_map.get(report_type,"report_basic"))
     try: return {"success":True,"data":build_report_data(date_from,date_to,report_type)}
     except HTTPException: raise
     except Exception as e: return {"success":False,"message":str(e)}
