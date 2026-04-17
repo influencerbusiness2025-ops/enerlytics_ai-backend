@@ -64,98 +64,74 @@ class CheckoutRequest(BaseModel):
     plan: str; billing_period: str; org_id: str
     success_url: Optional[str] = None; cancel_url: Optional[str] = None
 
+# ─── BMS MODELS ───────────────────────────────────────────────
+
+class EquipmentCreate(BaseModel):
+    site_id: str
+    name: str
+    category: str
+    manufacturer: Optional[str] = None
+    model: Optional[str] = None
+    bms_ref: Optional[str] = None
+    is_active: bool = True
+
+class EquipmentUpdate(BaseModel):
+    name: Optional[str] = None
+    category: Optional[str] = None
+    manufacturer: Optional[str] = None
+    model: Optional[str] = None
+    bms_ref: Optional[str] = None
+    is_active: Optional[bool] = None
+
+class ParameterCreate(BaseModel):
+    equipment_id: str
+    parameter_name: str
+    parameter_type: str
+    unit: Optional[str] = None
+    bms_tag: Optional[str] = None
+
 # ─── TIER CONFIG ──────────────────────────────────────────────
 
 TIER_FEATURES = {
     "trial": {
-        "dashboard": True,
-        "analytics": True,
-        "anomalies": True,
-        "upload_data": True,
-        "ai_insights": True,
-        "ai_recommendations": True,
-        "ai_energy_analyst": True,
-        "ai_senior_consultant": False,
-        "weather_normalisation": True,
-        "report_basic": True,
-        "report_ai_insights": True,
-        "report_full": True,
-        "report_premium_full": True,
-        "settings_sites": True,
-        "multi_site": False,
-        "api_access": False,
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
+        "ai_senior_consultant": False, "weather_normalisation": True,
+        "report_basic": True, "report_ai_insights": True, "report_full": True,
+        "report_premium_full": True, "settings_sites": True, "multi_site": False,
+        "api_access": False, "bms_parameters": True,
     },
     "basic": {
-        "dashboard": True,
-        "analytics": True,
-        "anomalies": True,
-        "upload_data": True,
-        "ai_insights": False,
-        "ai_recommendations": False,
-        "ai_energy_analyst": False,
-        "ai_senior_consultant": False,
-        "weather_normalisation": False,
-        "report_basic": True,
-        "report_ai_insights": False,
-        "report_full": False,
-        "report_premium_full": False,
-        "settings_sites": True,
-        "multi_site": False,
-        "api_access": False,
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": False, "ai_recommendations": False, "ai_energy_analyst": False,
+        "ai_senior_consultant": False, "weather_normalisation": False,
+        "report_basic": True, "report_ai_insights": False, "report_full": False,
+        "report_premium_full": False, "settings_sites": True, "multi_site": False,
+        "api_access": False, "bms_parameters": False,
     },
     "standard": {
-        "dashboard": True,
-        "analytics": True,
-        "anomalies": True,
-        "upload_data": True,
-        "ai_insights": True,
-        "ai_recommendations": True,
-        "ai_energy_analyst": False,
-        "ai_senior_consultant": False,
-        "weather_normalisation": True,
-        "report_basic": True,
-        "report_ai_insights": True,
-        "report_full": True,
-        "report_premium_full": False,
-        "settings_sites": True,
-        "multi_site": True,
-        "api_access": False,
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": False,
+        "ai_senior_consultant": False, "weather_normalisation": True,
+        "report_basic": True, "report_ai_insights": True, "report_full": True,
+        "report_premium_full": False, "settings_sites": True, "multi_site": True,
+        "api_access": False, "bms_parameters": False,
     },
     "premium": {
-        "dashboard": True,
-        "analytics": True,
-        "anomalies": True,
-        "upload_data": True,
-        "ai_insights": True,
-        "ai_recommendations": True,
-        "ai_energy_analyst": True,
-        "ai_senior_consultant": False,
-        "weather_normalisation": True,
-        "report_basic": True,
-        "report_ai_insights": True,
-        "report_full": True,
-        "report_premium_full": True,
-        "settings_sites": True,
-        "multi_site": True,
-        "api_access": True,
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
+        "ai_senior_consultant": False, "weather_normalisation": True,
+        "report_basic": True, "report_ai_insights": True, "report_full": True,
+        "report_premium_full": True, "settings_sites": True, "multi_site": True,
+        "api_access": True, "bms_parameters": True,
     },
     "enterprise": {
-        "dashboard": True,
-        "analytics": True,
-        "anomalies": True,
-        "upload_data": True,
-        "ai_insights": True,
-        "ai_recommendations": True,
-        "ai_energy_analyst": True,
-        "ai_senior_consultant": True,
-        "weather_normalisation": True,
-        "report_basic": True,
-        "report_ai_insights": True,
-        "report_full": True,
-        "report_premium_full": True,
-        "settings_sites": True,
-        "multi_site": True,
-        "api_access": True,
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
+        "ai_senior_consultant": True, "weather_normalisation": True,
+        "report_basic": True, "report_ai_insights": True, "report_full": True,
+        "report_premium_full": True, "settings_sites": True, "multi_site": True,
+        "api_access": True, "bms_parameters": True,
     },
 }
 
@@ -169,6 +145,7 @@ FEATURE_REQUIRED_TIER = {
     "ai_energy_analyst":     "premium",
     "report_premium_full":   "premium",
     "api_access":            "premium",
+    "bms_parameters":        "premium",
     "ai_senior_consultant":  "enterprise",
 }
 
@@ -233,9 +210,7 @@ def get_org_tier_by_id(org_id):
                     supabase.table("organisations").update({"tier":"basic"}).eq("id",org_id).execute()
                     return "basic"
         tier = org.get("tier", "basic")
-        # Fallback for unknown tiers
-        if tier not in TIER_FEATURES:
-            tier = "basic"
+        if tier not in TIER_FEATURES: tier = "basic"
         return tier
     except Exception: return "basic"
 
@@ -245,33 +220,26 @@ def require_feature(org_id, feature):
     if not features.get(feature, False):
         required = FEATURE_REQUIRED_TIER.get(feature, "standard")
         raise HTTPException(status_code=403, detail={
-            "error":"upgrade_required",
-            "message":f"This feature requires the {required} plan.",
-            "current_tier":tier,"required_tier":required,
-            "upgrade_url":f"{FRONTEND_URL}/pricing"
+            "error":"upgrade_required", "message":f"This feature requires the {required} plan.",
+            "current_tier":tier, "required_tier":required, "upgrade_url":f"{FRONTEND_URL}/pricing"
         })
 
 def resolve_tier(authorization, org_id):
-    """Resolve tier from JWT first, fall back to org_id. Returns (tier, org)."""
     if authorization and authorization.startswith("Bearer "):
         try:
             _, org = require_auth(authorization)
             return get_effective_tier(org), org
-        except HTTPException:
-            pass
+        except HTTPException: pass
     return get_org_tier_by_id(org_id), None
 
 def require_feature_jwt(authorization, org_id, feature):
-    """Check feature access preferring JWT auth over org_id."""
     tier, _ = resolve_tier(authorization, org_id)
     features = TIER_FEATURES.get(tier, {})
     if not features.get(feature, False):
         required = FEATURE_REQUIRED_TIER.get(feature, "standard")
         raise HTTPException(status_code=403, detail={
-            "error":"upgrade_required",
-            "message":f"This feature requires the {required} plan.",
-            "current_tier":tier,"required_tier":required,
-            "upgrade_url":f"{FRONTEND_URL}/pricing"
+            "error":"upgrade_required", "message":f"This feature requires the {required} plan.",
+            "current_tier":tier, "required_tier":required, "upgrade_url":f"{FRONTEND_URL}/pricing"
         })
 
 # ─── ENERGY HELPERS ───────────────────────────────────────────
@@ -398,6 +366,133 @@ def build_energy_summary_for_ai():
         "total_cost_gbp":round(ec+gc,2)
     }
     return summary
+
+# ─── BMS HELPERS ──────────────────────────────────────────────
+
+def build_bms_context_for_ai(site_id: Optional[str] = None, days: int = 7) -> str:
+    """
+    Fetch recent BMS readings and format as context string for AI prompts.
+    Returns empty string if no BMS data exists.
+    """
+    try:
+        eq_query = supabase.table("equipment").select("id,name,category,manufacturer,model").eq("is_active", True)
+        if site_id:
+            eq_query = eq_query.eq("site_id", site_id)
+        equipment_rows = eq_query.execute().data or []
+        if not equipment_rows:
+            return ""
+
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        context_lines = [f"BMS EQUIPMENT PARAMETERS (last {days} days):"]
+
+        for eq in equipment_rows:
+            eq_id = eq["id"]
+            params = (supabase.table("equipment_parameters")
+                      .select("id,parameter_name,parameter_type,unit")
+                      .eq("equipment_id", eq_id).execute().data) or []
+            if not params:
+                continue
+
+            eq_label = f"{eq['category'].upper()} — {eq['name']}"
+            if eq.get("manufacturer"):
+                eq_label += f" ({eq['manufacturer']} {eq.get('model','')})"
+            eq_lines = [f"\n{eq_label}"]
+
+            for param in params:
+                readings = (supabase.table("equipment_readings")
+                            .select("recorded_at,value,value_text")
+                            .eq("parameter_id", param["id"])
+                            .gte("recorded_at", cutoff)
+                            .order("recorded_at", desc=True)
+                            .limit(100).execute().data) or []
+
+                if not readings:
+                    eq_lines.append(f"  {param['parameter_name']} ({param['parameter_type']}): no recent data")
+                    continue
+
+                ptype = param["parameter_type"]
+                unit = param.get("unit") or ""
+
+                if ptype == "on_off":
+                    on_count = sum(1 for r in readings if str(r.get("value","")).strip() in ("1","1.0") or str(r.get("value_text","")).lower() in ("on","true","yes"))
+                    total = len(readings)
+                    on_pct = round(on_count / total * 100) if total else 0
+                    latest_val = readings[0].get("value_text") or readings[0].get("value")
+                    eq_lines.append(f"  {param['parameter_name']}: currently {latest_val} | ON {on_pct}% of readings ({on_count}/{total})")
+
+                elif ptype in ("flow_temp", "return_temp", "setpoint_temp"):
+                    vals = [float(r["value"]) for r in readings if r.get("value") is not None]
+                    if vals:
+                        eq_lines.append(f"  {param['parameter_name']}: latest {vals[0]}{unit} | avg {round(sum(vals)/len(vals),1)}{unit} | range {round(min(vals),1)}–{round(max(vals),1)}{unit}")
+
+                elif ptype == "run_hours":
+                    vals = [float(r["value"]) for r in readings if r.get("value") is not None]
+                    if vals:
+                        eq_lines.append(f"  {param['parameter_name']}: {vals[0]}{unit} (latest reading)")
+
+                elif ptype == "mode":
+                    from collections import Counter
+                    modes = [str(r.get("value_text") or r.get("value","")).strip() for r in readings if r.get("value_text") or r.get("value")]
+                    if modes:
+                        breakdown = ", ".join(f"{m}: {c}" for m,c in Counter(modes).most_common())
+                        eq_lines.append(f"  {param['parameter_name']}: currently {modes[0]} | distribution: {breakdown}")
+
+                elif ptype == "fault_alarm":
+                    active = [r for r in readings if str(r.get("value","")).strip() in ("1","1.0") or str(r.get("value_text","")).lower() in ("fault","alarm","true","active")]
+                    if active:
+                        eq_lines.append(f"  *** FAULT/ALARM ACTIVE — {param['parameter_name']}: last triggered {active[0]['recorded_at']} ({len(active)} occurrences) ***")
+                    else:
+                        eq_lines.append(f"  {param['parameter_name']}: no active faults")
+
+                else:
+                    vals = [float(r["value"]) for r in readings if r.get("value") is not None]
+                    if vals:
+                        eq_lines.append(f"  {param['parameter_name']}: {vals[0]}{unit} (latest)")
+
+            context_lines.extend(eq_lines)
+
+        return "\n".join(context_lines) if len(context_lines) > 1 else ""
+
+    except Exception as e:
+        print(f"[bms_context] Error: {e}")
+        return ""
+
+
+def parse_bms_csv(contents: bytes, parameter_id: str) -> List[dict]:
+    """
+    Parse a BMS CSV upload. Flexible column detection.
+    Expects: timestamp column + value column (+ optional status/text column).
+    """
+    df = pd.read_csv(StringIO(contents.decode("utf-8")))
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    ts_col = next((c for c in df.columns if any(k in c for k in ("time","date","timestamp"))), None)
+    if not ts_col:
+        raise ValueError("CSV must have a timestamp/datetime column")
+
+    val_col = next((c for c in df.columns if c in ("value","val","reading","data")), None)
+    if not val_col:
+        val_col = next((c for c in df.columns if c != ts_col), None)
+    if not val_col:
+        raise ValueError("CSV must have a value column")
+
+    val_text_col = next((c for c in df.columns if any(k in c for k in ("text","status","state")) and c != val_col), None)
+
+    df["_ts"] = pd.to_datetime(df[ts_col], dayfirst=True, errors="coerce")
+    df = df.dropna(subset=["_ts"])
+    df["_val"] = pd.to_numeric(df[val_col], errors="coerce")
+
+    records = []
+    for _, row in df.iterrows():
+        rec = {
+            "parameter_id": parameter_id,
+            "recorded_at": row["_ts"].isoformat(),
+            "value": float(row["_val"]) if not pd.isna(row["_val"]) else None,
+            "value_text": str(row[val_text_col]).strip() if val_text_col and not pd.isna(row.get(val_text_col)) else None,
+        }
+        records.append(rec)
+    return records
+
 
 # ─── RAG TOOLS ────────────────────────────────────────────────
 
@@ -593,8 +688,8 @@ def _tool_get_monthly_stats(year):
 
 # ─── AI ANALYST SYSTEM PROMPTS ────────────────────────────────
 
-def build_data_analyst_prompt(elec, gas, today):
-    """Premium tier — AI Data Analyst. Focused on site data, benchmarking, best practices."""
+def build_data_analyst_prompt(elec, gas, today, bms_context=""):
+    bms_section = f"\n{bms_context}\n" if bms_context else "\nBMS DATA: No equipment parameters uploaded yet.\n"
     return f"""You are Effictra AI Data Analyst — an intelligent energy data analyst embedded in this building's energy monitoring platform.
 
 Today's date: {today}
@@ -607,10 +702,10 @@ YOUR EXPERTISE:
 - Benchmarking against CIBSE TM46 and Carbon Trust standards for similar buildings
 - Identifying inefficiencies: high baseload, off-hours waste, peak demand issues
 - Operational best practices for HVAC, lighting, and building management
+- Correlating BMS equipment parameters (temperatures, on/off status, run hours, faults) with energy patterns
 - Understanding of building types: hotels, offices, retail, hospitals, industrial
 - Basic carbon footprint calculations from energy data
 - Simple ROI calculations for common energy efficiency measures
-- Weather-related consumption patterns and degree days
 
 THIS BUILDING'S DATA:
 Electricity: {elec.get('total_kwh','N/A')} kWh total | £{elec.get('total_cost_gbp','N/A')} cost
@@ -622,26 +717,25 @@ Weekday avg: {elec.get('avg_weekday_daily','N/A')} kWh/day | Weekend avg: {elec.
 Month-on-month: {elec.get('month_on_month_pct','N/A')}%
 Monthly breakdown: {json.dumps(elec.get('monthly_breakdown',{}))}
 GAS: {gas.get('total_kwh','N/A')} kWh | £{gas.get('total_cost_gbp','N/A')}
-
+{bms_section}
 BENCHMARKS (CIBSE TM46 — Hotels):
-- Good practice electricity: 195 kWh/m²/yr
-- Typical electricity: 305 kWh/m²/yr
+- Good practice electricity: 195 kWh/m²/yr | Typical: 305 kWh/m²/yr
 - Good practice fossil fuel: 285 kWh/m²/yr
-UK rates: Electricity £0.28/kWh | Gas £0.07/kWh
-Carbon intensity: 0.207 kgCO₂/kWh (electricity)
+UK rates: Electricity £0.28/kWh | Gas £0.07/kWh | Carbon: 0.207 kgCO₂/kWh
 
 HOW TO RESPOND:
 - Use your database tools for specific date/period questions
-- Compare data against benchmarks where relevant
+- When BMS data is available, actively correlate equipment parameters with energy patterns
+- Flag any FAULT/ALARM ACTIVE entries prominently
+- If setpoint temperatures look high vs best practice, flag as saving opportunity
+- If equipment shows no overnight off, flag as potential waste
 - Give practical, actionable recommendations with estimated savings
-- Keep answers focused on data analysis and operational improvements
-- If asked about ESOS, ISO 50001, procurement strategy, net zero policy, or funding applications — briefly acknowledge the question but explain that detailed compliance and strategic consultancy is available on the Enterprise plan via Effictra Energy
-- Format: **bold** for key numbers, bullet points for lists
-- Be helpful, specific and data-driven"""
+- If asked about ESOS, ISO 50001, procurement strategy, net zero — briefly acknowledge but explain Enterprise plan covers this
+- Format: **bold** for key numbers, bullet points for lists"""
 
 
-def build_senior_consultant_prompt(elec, gas, today):
-    """Enterprise tier — AI Senior Energy Consultant. Full expertise."""
+def build_senior_consultant_prompt(elec, gas, today, bms_context=""):
+    bms_section = f"\n{bms_context}\n" if bms_context else "\nBMS DATA: No equipment parameters uploaded yet.\n"
     return f"""You are Effictra AI Senior Energy Consultant — a senior energy consultant with 20+ years of experience, provided exclusively on the Effictra AI Enterprise plan by Effictra Energy (effictraenergy.co.uk).
 
 Today's date: {today}
@@ -654,6 +748,7 @@ YOUR FULL EXPERTISE:
 - Tariff structures: half-hourly metering, TOU, capacity charges, DUoS, TNUoS, BSUoS, CCL
 - Carbon reporting: Scope 1/2/3, SECR narrative, TCFD, SBTi, net zero pathways, PAS 2060
 - Benchmarking: CIBSE TM46, TM54, Carbon Trust, Display Energy Certificates, REEB
+- BMS/controls optimisation: setpoint analysis, scheduling, sequence of operations review
 - Demand side response, flexibility markets, FFR, DC, BM, smart grid participation
 - Utility procurement: PPAs, flexible contracts, basket trading, green tariffs, REGOs
 - Funding: SALIX loans, ECO4, UKRI, PSDS, HUG2, industrial energy transformation fund
@@ -670,32 +765,27 @@ Weekday avg: {elec.get('avg_weekday_daily','N/A')} kWh/day | Weekend avg: {elec.
 Month-on-month: {elec.get('month_on_month_pct','N/A')}%
 Monthly breakdown: {json.dumps(elec.get('monthly_breakdown',{}))}
 GAS: {gas.get('total_kwh','N/A')} kWh | £{gas.get('total_cost_gbp','N/A')}
-
+{bms_section}
 BENCHMARKS (CIBSE TM46 — Hotels):
 Good practice electricity: 195 kWh/m²/yr | Typical: 305 kWh/m²/yr
 Good practice fossil fuel: 285 kWh/m²/yr | Typical: 420 kWh/m²/yr
-UK rates: Electricity £0.28/kWh | Gas £0.07/kWh
-Carbon intensity: 0.207 kgCO₂/kWh (DESNZ 2024)
+UK rates: Electricity £0.28/kWh | Gas £0.07/kWh | Carbon intensity: 0.207 kgCO₂/kWh (DESNZ 2024)
 
 HOW TO RESPOND:
 - Use database tools for specific data questions
+- When BMS data is available, provide detailed analysis: setpoint optimisation vs CIBSE guidance, scheduling from on/off patterns, fault diagnosis
+- Flag active fault alarms immediately with root cause analysis and recommended actions
 - Apply full consultancy expertise — compliance, strategy, procurement, funding
 - Give specific recommendations with £/kWh savings, ROI, payback periods
-- Reference relevant regulations, standards, funding schemes where appropriate
-- For compliance questions: give detailed, accurate guidance
-- For net zero/carbon strategy: provide structured pathway advice
-- For procurement: explain options, risks and recommendations
+- Reference relevant regulations, standards, funding schemes
 - Be direct, confident and authoritative — you are the expert
-- Format: **bold** for key numbers, bullet points for lists
-- Never deflect — give your best expert answer on any energy topic"""
+- Format: **bold** for key numbers, bullet points for lists"""
 
 
 # ─── AGENTIC LOOP ─────────────────────────────────────────────
 
 async def run_analyst_chat(messages, system_prompt, org_id, conversation_id, original_messages):
-    """Shared agentic loop for both analyst tiers."""
     max_iterations=5; iteration=0; final_response=""
-
     while iteration < max_iterations:
         iteration += 1
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -705,7 +795,6 @@ async def run_analyst_chat(messages, system_prompt, org_id, conversation_id, ori
                 headers={"x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","content-type":"application/json"},
                 json=body)
             resp.raise_for_status(); result=resp.json()
-
         stop_reason=result.get("stop_reason"); content=result.get("content",[])
         text_parts=[b["text"] for b in content if b["type"]=="text"]
         if text_parts: final_response="\n".join(text_parts)
@@ -720,11 +809,8 @@ async def run_analyst_chat(messages, system_prompt, org_id, conversation_id, ori
                 tool_results.append({"type":"tool_result","tool_use_id":tb["id"],"content":tool_result})
             messages.append({"role":"user","content":tool_results}); continue
         break
-
-    # Save conversation
     all_messages=[{"role":m["role"],"content":m["content"]} for m in original_messages]
     all_messages.append({"role":"assistant","content":final_response})
-
     if org_id:
         if conversation_id:
             supabase.table("ai_conversations").update(
@@ -737,7 +823,6 @@ async def run_analyst_chat(messages, system_prompt, org_id, conversation_id, ori
                 {"org_id":org_id,"title":title,"messages":all_messages}).execute()
             if result_db.data:
                 return {"response":final_response,"conversation_id":result_db.data[0]["id"]}
-
     return {"response":final_response,"conversation_id":conversation_id}
 
 # ─── ROOT ─────────────────────────────────────────────────────
@@ -916,6 +1001,234 @@ def update_site(site_id: str, site: SiteCreate):
 def delete_site(site_id: str):
     try: supabase.table("sites").update({"is_active":False}).eq("id",site_id).execute(); return {"success":True,"deleted":site_id}
     except Exception as e: return {"success":False,"message":str(e)}
+
+# ─── BMS — EQUIPMENT ──────────────────────────────────────────
+
+@app.get("/bms/equipment")
+def list_equipment(site_id: str=Query(...),
+                   authorization: Optional[str]=Header(default=None),
+                   org_id: Optional[str]=Query(default=None)):
+    require_feature_jwt(authorization, org_id, "bms_parameters")
+    try:
+        result = (supabase.table("equipment")
+                  .select("id,name,category,manufacturer,model,bms_ref,is_active,created_at")
+                  .eq("site_id", site_id).eq("is_active", True)
+                  .order("category").order("name").execute())
+        return {"equipment": result.data or []}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+@app.post("/bms/equipment")
+def create_equipment(eq: EquipmentCreate,
+                     authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization, None, "bms_parameters")
+    try:
+        result = supabase.table("equipment").insert({
+            "site_id": eq.site_id, "name": eq.name, "category": eq.category,
+            "manufacturer": eq.manufacturer, "model": eq.model,
+            "bms_ref": eq.bms_ref, "is_active": eq.is_active,
+        }).execute()
+        return {"success": True, "equipment": result.data[0] if result.data else None}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+@app.put("/bms/equipment/{equipment_id}")
+def update_equipment(equipment_id: str, eq: EquipmentUpdate,
+                     authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization, None, "bms_parameters")
+    try:
+        updates = {k: v for k, v in eq.dict().items() if v is not None}
+        result = supabase.table("equipment").update(updates).eq("id", equipment_id).execute()
+        return {"success": True, "equipment": result.data[0] if result.data else None}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+@app.delete("/bms/equipment/{equipment_id}")
+def delete_equipment(equipment_id: str,
+                     authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization, None, "bms_parameters")
+    try:
+        supabase.table("equipment").update({"is_active": False}).eq("id", equipment_id).execute()
+        return {"success": True, "deleted": equipment_id}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+# ─── BMS — PARAMETERS ─────────────────────────────────────────
+
+@app.get("/bms/equipment/{equipment_id}/parameters")
+def list_parameters(equipment_id: str,
+                    authorization: Optional[str]=Header(default=None),
+                    org_id: Optional[str]=Query(default=None)):
+    require_feature_jwt(authorization, org_id, "bms_parameters")
+    try:
+        result = (supabase.table("equipment_parameters")
+                  .select("id,parameter_name,parameter_type,unit,bms_tag,created_at")
+                  .eq("equipment_id", equipment_id).order("parameter_type").execute())
+        return {"parameters": result.data or []}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+@app.post("/bms/parameters")
+def create_parameter(param: ParameterCreate,
+                     authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization, None, "bms_parameters")
+    try:
+        result = supabase.table("equipment_parameters").insert({
+            "equipment_id": param.equipment_id, "parameter_name": param.parameter_name,
+            "parameter_type": param.parameter_type, "unit": param.unit, "bms_tag": param.bms_tag,
+        }).execute()
+        return {"success": True, "parameter": result.data[0] if result.data else None}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+@app.delete("/bms/parameters/{parameter_id}")
+def delete_parameter(parameter_id: str,
+                     authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization, None, "bms_parameters")
+    try:
+        supabase.table("equipment_parameters").delete().eq("id", parameter_id).execute()
+        return {"success": True, "deleted": parameter_id}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+# ─── BMS — READINGS (CSV UPLOAD) ──────────────────────────────
+
+@app.post("/bms/parameters/{parameter_id}/upload")
+async def upload_bms_readings(parameter_id: str,
+                               file: UploadFile=File(...),
+                               authorization: Optional[str]=Header(default=None)):
+    """
+    Upload BMS readings CSV for a specific parameter.
+    Expected CSV: timestamp column + value column (+ optional text/status column).
+
+    Examples:
+      2024-01-15 08:00, 72.5          (temperature)
+      2024-01-15 08:00, 1, ON         (on/off with text)
+      2024-01-15 08:00, HEATING       (mode)
+    """
+    require_feature_jwt(authorization, None, "bms_parameters")
+    try:
+        param_check = (supabase.table("equipment_parameters")
+                       .select("id,parameter_name,parameter_type")
+                       .eq("id", parameter_id).single().execute())
+        if not param_check.data:
+            raise HTTPException(status_code=404, detail="Parameter not found")
+        contents = await file.read()
+        records = parse_bms_csv(contents, parameter_id=parameter_id)
+        if not records:
+            return {"success": False, "message": "No valid rows parsed from CSV"}
+        inserted = 0
+        for i in range(0, len(records), 500):
+            supabase.table("equipment_readings").insert(records[i:i+500]).execute()
+            inserted += len(records[i:i+500])
+        print(f"[bms] Uploaded {inserted} readings for parameter {parameter_id}")
+        return {
+            "success": True, "parameter_id": parameter_id,
+            "parameter_name": param_check.data["parameter_name"],
+            "parameter_type": param_check.data["parameter_type"],
+            "rows_inserted": inserted,
+            "message": f"{inserted} readings uploaded successfully",
+        }
+    except HTTPException: raise
+    except Exception as e:
+        print(f"[bms] Upload error: {e}")
+        return {"success": False, "message": str(e)}
+
+@app.get("/bms/parameters/{parameter_id}/readings")
+def get_readings(parameter_id: str,
+                 start_date: Optional[str]=Query(default=None),
+                 end_date: Optional[str]=Query(default=None),
+                 limit: int=Query(default=500, le=5000),
+                 authorization: Optional[str]=Header(default=None),
+                 org_id: Optional[str]=Query(default=None)):
+    require_feature_jwt(authorization, org_id, "bms_parameters")
+    try:
+        query = (supabase.table("equipment_readings")
+                 .select("id,recorded_at,value,value_text")
+                 .eq("parameter_id", parameter_id)
+                 .order("recorded_at", desc=False))
+        if start_date: query = query.gte("recorded_at", start_date)
+        if end_date: query = query.lte("recorded_at", end_date + "T23:59:59")
+        result = query.limit(limit).execute()
+        return {"readings": result.data or [], "count": len(result.data or [])}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+@app.delete("/bms/parameters/{parameter_id}/readings")
+def delete_readings(parameter_id: str,
+                    authorization: Optional[str]=Header(default=None)):
+    """Delete all readings for a parameter (useful for re-upload)."""
+    require_feature_jwt(authorization, None, "bms_parameters")
+    try:
+        supabase.table("equipment_readings").delete().eq("parameter_id", parameter_id).execute()
+        return {"success": True, "message": f"All readings deleted for parameter {parameter_id}"}
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+@app.get("/bms/site/{site_id}/summary")
+def get_site_bms_summary(site_id: str,
+                          days: int=Query(default=7, ge=1, le=90),
+                          authorization: Optional[str]=Header(default=None),
+                          org_id: Optional[str]=Query(default=None)):
+    """
+    Summary of all BMS equipment and latest parameter values for a site.
+    Used by the frontend equipment overview page.
+    """
+    require_feature_jwt(authorization, org_id, "bms_parameters")
+    try:
+        equipment_rows = (supabase.table("equipment")
+                          .select("id,name,category,manufacturer,model,bms_ref")
+                          .eq("site_id", site_id).eq("is_active", True)
+                          .order("category").order("name").execute().data) or []
+        cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+        result = []
+        for eq in equipment_rows:
+            params = (supabase.table("equipment_parameters")
+                      .select("id,parameter_name,parameter_type,unit")
+                      .eq("equipment_id", eq["id"]).execute().data) or []
+            param_summaries = []
+            has_active_fault = False
+            for param in params:
+                latest = (supabase.table("equipment_readings")
+                          .select("recorded_at,value,value_text")
+                          .eq("parameter_id", param["id"])
+                          .gte("recorded_at", cutoff)
+                          .order("recorded_at", desc=True)
+                          .limit(1).execute().data)
+                latest_reading = latest[0] if latest else None
+                fault_active = False
+                if param["parameter_type"] == "fault_alarm" and latest_reading:
+                    val = str(latest_reading.get("value","")).strip()
+                    val_text = str(latest_reading.get("value_text","")).lower()
+                    fault_active = val in ("1","1.0") or val_text in ("fault","alarm","true","active")
+                    if fault_active: has_active_fault = True
+                param_summaries.append({
+                    "id": param["id"], "parameter_name": param["parameter_name"],
+                    "parameter_type": param["parameter_type"], "unit": param.get("unit"),
+                    "latest_value": latest_reading.get("value") if latest_reading else None,
+                    "latest_value_text": latest_reading.get("value_text") if latest_reading else None,
+                    "latest_recorded_at": latest_reading.get("recorded_at") if latest_reading else None,
+                    "fault_active": fault_active,
+                })
+            result.append({
+                "id": eq["id"], "name": eq["name"], "category": eq["category"],
+                "manufacturer": eq.get("manufacturer"), "model": eq.get("model"),
+                "bms_ref": eq.get("bms_ref"), "has_active_fault": has_active_fault,
+                "parameters": param_summaries,
+            })
+        by_category = {}
+        for item in result:
+            cat = item["category"]
+            if cat not in by_category: by_category[cat] = []
+            by_category[cat].append(item)
+        return {
+            "site_id": site_id, "days": days,
+            "equipment_count": len(result),
+            "active_faults": sum(1 for item in result if item["has_active_fault"]),
+            "equipment": result, "by_category": by_category,
+        }
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
 
 # ─── WEATHER NORMALISED ───────────────────────────────────────
 
@@ -1119,28 +1432,30 @@ def get_ai_insights_history():
 @app.post("/ai/analyst/chat")
 async def ai_analyst_chat(req: ChatRequest,
                            authorization: Optional[str]=Header(default=None)):
-    """
-    Premium tier: AI Energy Analyst — site data, benchmarking, best practices.
-    Enterprise tier: AI Senior Consultant — full expertise including compliance, procurement, net zero.
-    """
     require_feature_jwt(authorization, req.org_id, "ai_energy_analyst")
-
     try:
         stats=build_energy_summary_for_ai()
         elec=stats.get("electricity",{}); gas=stats.get("gas",{})
         today=datetime.utcnow().strftime("%Y-%m-%d")
 
+        # Fetch BMS context for the org's first active site
+        site_id = None
+        try:
+            sites = (supabase.table("sites").select("id").eq("is_active", True).limit(1).execute().data)
+            if sites: site_id = sites[0]["id"]
+        except Exception: pass
+        bms_context = build_bms_context_for_ai(site_id=site_id, days=7)
+
         tier, _ = resolve_tier(authorization, req.org_id)
         if tier == "enterprise":
-            system=build_senior_consultant_prompt(elec,gas,today)
-            print(f"[analyst] Using SENIOR CONSULTANT prompt (tier={tier})")
+            system=build_senior_consultant_prompt(elec, gas, today, bms_context)
+            print(f"[analyst] SENIOR CONSULTANT prompt (tier={tier}, bms={'yes' if bms_context else 'no'})")
         else:
-            system=build_data_analyst_prompt(elec,gas,today)
-            print(f"[analyst] Using DATA ANALYST prompt (tier={tier})")
+            system=build_data_analyst_prompt(elec, gas, today, bms_context)
+            print(f"[analyst] DATA ANALYST prompt (tier={tier}, bms={'yes' if bms_context else 'no'})")
 
         messages=[{"role":m.role,"content":m.content} for m in req.messages]
         original_messages=[{"role":m.role,"content":m.content} for m in req.messages]
-
         return await run_analyst_chat(messages,system,req.org_id,req.conversation_id,original_messages)
 
     except HTTPException: raise
