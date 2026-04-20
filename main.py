@@ -460,8 +460,9 @@ def build_bms_context_for_ai(site_id: Optional[str] = None, days: int = 7) -> st
 
 def parse_bms_csv(contents: bytes, parameter_id: str) -> List[dict]:
     """
-    Parse a BMS CSV upload. Flexible column detection.
+    Parse a BMS CSV upload. Flexible column detection and robust date parsing.
     Expects: timestamp column + value column (+ optional status/text column).
+    Handles all common date formats globally.
     """
     df = pd.read_csv(StringIO(contents.decode("utf-8")))
     df.columns = [c.strip().lower() for c in df.columns]
@@ -478,15 +479,94 @@ def parse_bms_csv(contents: bytes, parameter_id: str) -> List[dict]:
 
     val_text_col = next((c for c in df.columns if any(k in c for k in ("text","status","state")) and c != val_col), None)
 
-    df["_ts"] = pd.to_datetime(df[ts_col], dayfirst=True, errors="coerce")
+    def parse_timestamp_flexible(ts_str):
+        """
+        Try multiple date formats in order of specificity.
+        Handles ISO 8601, UK/EU (dd/mm/yyyy), US (mm/dd/yyyy), epoch, and more.
+        """
+        if pd.isna(ts_str) or str(ts_str).strip() == "":
+            return pd.NaT
+
+        ts_str = str(ts_str).strip()
+
+        # Try pandas auto-detect first (handles ISO 8601, most standard formats)
+        try:
+            result = pd.to_datetime(ts_str, infer_datetime_format=True)
+            if not pd.isna(result):
+                return result
+        except Exception:
+            pass
+
+        # Explicit format attempts — ordered by global prevalence
+        formats = [
+            # ISO variants
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M:%SZ",
+            "%Y-%m-%dT%H:%M:%S%z",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+            # UK/EU: day first
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M",
+            "%d/%m/%Y",
+            "%d-%m-%Y %H:%M:%S",
+            "%d-%m-%Y %H:%M",
+            "%d-%m-%Y",
+            "%d.%m.%Y %H:%M:%S",
+            "%d.%m.%Y %H:%M",
+            "%d.%m.%Y",
+            # US: month first
+            "%m/%d/%Y %H:%M:%S",
+            "%m/%d/%Y %H:%M",
+            "%m/%d/%Y",
+            "%m-%d-%Y %H:%M:%S",
+            "%m-%d-%Y %H:%M",
+            # BMS-specific common exports
+            "%d %b %Y %H:%M:%S",
+            "%d %b %Y %H:%M",
+            "%b %d %Y %H:%M:%S",
+            "%Y/%m/%d %H:%M:%S",
+            "%Y/%m/%d %H:%M",
+            "%Y/%m/%d",
+        ]
+
+        for fmt in formats:
+            try:
+                result = datetime.strptime(ts_str, fmt)
+                return result
+            except ValueError:
+                continue
+
+        # Last resort: unix epoch (integer or float seconds)
+        try:
+            epoch = float(ts_str)
+            return datetime.utcfromtimestamp(epoch)
+        except (ValueError, OSError):
+            pass
+
+        return pd.NaT
+
+    df["_ts"] = df[ts_col].apply(parse_timestamp_flexible)
     df = df.dropna(subset=["_ts"])
+
+    if df.empty:
+        raise ValueError(
+            "Could not parse any timestamps. Please ensure first row is headers and "
+            "timestamps are in a standard format (e.g. 2024-01-15 08:00, 15/01/2024 08:00, or 01/15/2024 08:00)."
+        )
+
     df["_val"] = pd.to_numeric(df[val_col], errors="coerce")
 
     records = []
     for _, row in df.iterrows():
+        ts = row["_ts"]
+        # Normalise to naive UTC isoformat string
+        if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+            ts = ts.astimezone(datetime.timezone.utc).replace(tzinfo=None)
         rec = {
             "parameter_id": parameter_id,
-            "recorded_at": row["_ts"].isoformat(),
+            "recorded_at": ts.isoformat() if hasattr(ts, "isoformat") else str(ts),
             "value": float(row["_val"]) if not pd.isna(row["_val"]) else None,
             "value_text": str(row[val_text_col]).strip() if val_text_col and not pd.isna(row.get(val_text_col)) else None,
         }
