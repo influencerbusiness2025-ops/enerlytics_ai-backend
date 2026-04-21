@@ -303,7 +303,7 @@ def estimate_sensitivity(consumption,hdd,cdd,mode):
 
 async def call_claude(prompt,max_tokens=4000):
     if not ANTHROPIC_API_KEY: raise ValueError("ANTHROPIC_API_KEY not set")
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         r=await client.post("https://api.anthropic.com/v1/messages",
             headers={"x-api-key":ANTHROPIC_API_KEY,"anthropic-version":"2023-06-01","content-type":"application/json"},
             json={"model":ANTHROPIC_MODEL,"max_tokens":max_tokens,"messages":[{"role":"user","content":prompt}]})
