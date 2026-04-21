@@ -1425,17 +1425,156 @@ def get_anomalies(days: int=Query(default=90,ge=7,le=365),
 
 # ─── AI INSIGHTS ──────────────────────────────────────────────
 
-async def generate_ai_insights_data(stats):
+# Period types and their rules
+# all_time   → once ever (never regenerate)
+# last_year  → once ever
+# last_3_months → once per month (regenerate next month)
+# last_1_month  → once per month (regenerate next month)
+
+PERIOD_LABELS = {
+    "all_time":       "All available data",
+    "last_year":      "Last 12 months",
+    "last_3_months":  "Last 3 months",
+    "last_1_month":   "Last month",
+}
+
+def get_period_date_range(period_type: str):
+    """Return (start_date, end_date) strings for a period type."""
+    today = datetime.utcnow().date()
+    end = str(today)
+    if period_type == "all_time":
+        return None, end  # No start filter
+    elif period_type == "last_year":
+        return str(today - timedelta(days=365)), end
+    elif period_type == "last_3_months":
+        return str(today - timedelta(days=90)), end
+    elif period_type == "last_1_month":
+        return str(today - timedelta(days=30)), end
+    return None, end
+
+def check_generation_allowed(org_id: str, period_type: str):
+    """
+    Check if generation is allowed for this org + period.
+    Returns (allowed: bool, reason: str, existing_id: str|None)
+    """
+    try:
+        result = (supabase.table("ai_insights")
+                  .select("id,generated_at,period_type")
+                  .eq("status", "complete")
+                  .eq("period_type", period_type)
+                  .order("generated_at", desc=True)
+                  .limit(1).execute())
+        if not result.data:
+            return True, "ok", None
+
+        existing = result.data[0]
+        generated_at = datetime.fromisoformat(existing["generated_at"].replace("Z", "+00:00").replace("+00:00", ""))
+
+        # all_time and last_year: once ever
+        if period_type in ("all_time", "last_year"):
+            return False, f"Already generated for {PERIOD_LABELS[period_type]}. This report can only be generated once.", existing["id"]
+
+        # last_3_months and last_1_month: once per calendar month
+        now = datetime.utcnow()
+        if generated_at.year == now.year and generated_at.month == now.month:
+            next_month = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
+            return False, f"Already generated this month. Next generation available from {next_month.strftime('%1 %B %Y')}.", existing["id"]
+
+        return True, "ok", None
+    except Exception as e:
+        print(f"[ai] check_generation_allowed error: {e}")
+        return True, "ok", None  # Allow on error
+
+def build_energy_summary_for_period(start_date=None, end_date=None):
+    """Build energy summary filtered to a date range."""
+    elec_query = supabase.table("energy_data").select("timestamp,consumption").range(0, 20000)
+    gas_query = supabase.table("gas_data").select("timestamp,consumption").range(0, 20000)
+    if start_date:
+        elec_query = elec_query.gte("timestamp", start_date)
+        gas_query = gas_query.gte("timestamp", start_date)
+    if end_date:
+        elec_query = elec_query.lte("timestamp", end_date + "T23:59:59")
+        gas_query = gas_query.lte("timestamp", end_date + "T23:59:59")
+    elec_data = elec_query.execute().data or []
+    gas_data = gas_query.execute().data or []
+    summary = {}
+    if elec_data:
+        df=pd.DataFrame(elec_data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
+        df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
+        df["hour"]=df["timestamp"].dt.hour; df["dow"]=df["timestamp"].dt.dayofweek
+        df["month"]=df["timestamp"].dt.month; df["date"]=df["timestamp"].dt.date.astype(str)
+        df["is_weekend"]=df["dow"]>=5
+        daily=df.groupby("date")["consumption"].sum(); monthly=df.groupby("month")["consumption"].sum()
+        off_hours=df[df["hour"].isin([22,23,0,1,2,3,4,5,6])]
+        hourly_avg=df.groupby("hour")["consumption"].mean()
+        wd_avg=df[~df["is_weekend"]].groupby("date")["consumption"].sum().mean()
+        we_avg=df[df["is_weekend"]].groupby("date")["consumption"].sum().mean()
+        ms=monthly.sort_index(); mom=None
+        if len(ms)>=2:
+            last,prev=float(ms.iloc[-1]),float(ms.iloc[-2])
+            mom=round((last-prev)/prev*100,1) if prev else None
+        total_kwh=round(float(df["consumption"].sum()),1)
+        days_of_data = int(df["date"].nunique())
+        summary["electricity"]={
+            "total_kwh":total_kwh,"total_cost_gbp":round(total_kwh*ELECTRICITY_RATE_GBP,2),
+            "avg_daily_kwh":round(float(daily.mean()),1),"peak_daily_kwh":round(float(daily.max()),1),
+            "min_daily_kwh":round(float(daily.min()),1),
+            "baseload_kwh":round(float(df["consumption"].quantile(0.1)),2),
+            "peak_demand_kwh":round(float(df["consumption"].max()),2),
+            "peak_hour":int(hourly_avg.idxmax()),"quiet_hour":int(hourly_avg.idxmin()),
+            "avg_weekday_daily":round(float(wd_avg),1) if not np.isnan(wd_avg) else 0,
+            "avg_weekend_daily":round(float(we_avg),1) if not np.isnan(we_avg) else 0,
+            "off_hours_avg_kwh":round(float(off_hours["consumption"].mean()),2) if not off_hours.empty else 0,
+            "off_hours_pct":round(float(off_hours["consumption"].sum()/df["consumption"].sum()*100),1) if total_kwh else 0,
+            "month_on_month_pct":mom,
+            "monthly_breakdown":{str(k):round(float(v),1) for k,v in monthly.items()},
+            "data_from":str(df["date"].min()),"data_to":str(df["date"].max()),
+            "days_of_data":days_of_data
+        }
+    if gas_data:
+        gdf=pd.DataFrame(gas_data); gdf["consumption"]=pd.to_numeric(gdf["consumption"],errors="coerce")
+        gdf=gdf.dropna(subset=["consumption"]); gdf=parse_timestamps_naive(gdf)
+        gdf["date"]=gdf["timestamp"].dt.date.astype(str); gdf["month"]=gdf["timestamp"].dt.month
+        gas_daily=gdf.groupby("date")["consumption"].sum()
+        gas_monthly=gdf.groupby("month")["consumption"].sum()
+        gas_total=round(float(gdf["consumption"].sum()),1)
+        summary["gas"]={
+            "total_kwh":gas_total,"total_cost_gbp":round(gas_total*GAS_RATE_GBP,2),
+            "avg_daily_kwh":round(float(gas_daily.mean()),1),
+            "peak_daily_kwh":round(float(gas_daily.max()),1),
+            "monthly_breakdown":{str(k):round(float(v),1) for k,v in gas_monthly.items()},
+            "data_from":str(gdf["date"].min()),"data_to":str(gdf["date"].max())
+        }
+    ec=summary.get("electricity",{}).get("total_cost_gbp",0)
+    gc=summary.get("gas",{}).get("total_cost_gbp",0)
+    summary["combined"]={
+        "total_energy_kwh":round(summary.get("electricity",{}).get("total_kwh",0)+summary.get("gas",{}).get("total_kwh",0),1),
+        "total_cost_gbp":round(ec+gc,2)
+    }
+    return summary
+
+async def generate_ai_insights_data(stats, period_label="the analysis period"):
     elec,gas,comb=stats.get("electricity",{}),stats.get("gas",{}),stats.get("combined",{})
+    data_from = elec.get("data_from") or gas.get("data_from","unknown")
+    data_to = elec.get("data_to") or gas.get("data_to","unknown")
+    days = elec.get("days_of_data") or 0
+    if days >= 365:
+        period_desc = f"{round(days/365,1)} years ({data_from} to {data_to})"
+    elif days >= 30:
+        period_desc = f"{round(days/30,1)} months ({data_from} to {data_to})"
+    else:
+        period_desc = f"{days} days ({data_from} to {data_to})"
+
     prompt=f"""You are an expert energy analyst. Analyse this building energy data and return ONLY valid JSON.
-ELECTRICITY: total={elec.get('total_kwh')}kWh cost=£{elec.get('total_cost_gbp')} avg_daily={elec.get('avg_daily_kwh')}kWh
-baseload={elec.get('baseload_kwh')}kWh/h peak_hour={elec.get('peak_hour')}:00 off_hours={elec.get('off_hours_pct')}%
-weekday={elec.get('avg_weekday_daily')}kWh weekend={elec.get('avg_weekend_daily')}kWh mom={elec.get('month_on_month_pct')}%
-monthly={json.dumps(elec.get('monthly_breakdown',{}))} period={elec.get('data_from')} to {elec.get('data_to')}
-GAS: total={gas.get('total_kwh')}kWh cost=£{gas.get('total_cost_gbp')}
-COMBINED: total={comb.get('total_energy_kwh')}kWh cost=£{comb.get('total_cost_gbp')}
+ANALYSIS PERIOD: {period_desc} | Period label: {period_label}
+ELECTRICITY: total={elec.get("total_kwh")}kWh cost=£{elec.get("total_cost_gbp")} avg_daily={elec.get("avg_daily_kwh")}kWh
+baseload={elec.get("baseload_kwh")}kWh/h peak_hour={elec.get("peak_hour")}:00 off_hours={elec.get("off_hours_pct")}%
+weekday={elec.get("avg_weekday_daily")}kWh weekend={elec.get("avg_weekend_daily")}kWh mom={elec.get("month_on_month_pct")}%
+monthly={json.dumps(elec.get("monthly_breakdown",{}))} period={data_from} to {data_to}
+GAS: total={gas.get("total_kwh")}kWh cost=£{gas.get("total_cost_gbp")}
+COMBINED: total={comb.get("total_energy_kwh")}kWh cost=£{comb.get("total_cost_gbp")}
 Return ONLY this JSON:
-{{"executive_summary":"2-3 sentences for business owner",
+{{"executive_summary":"2-3 sentences for business owner. MUST mention the analysis period e.g. \'Based on {period_desc} of data...\'",
 "insights":[{{"id":"slug","category":"baseload|peak_demand|off_hours|weekday_weekend|seasonal|gas|cost|trend",
 "title":"Short title","finding":"2-3 sentences with numbers","implication":"Why this matters",
 "severity":"high|medium|low|positive","audience":["facilities","consultant","executive"],
@@ -1452,58 +1591,144 @@ Generate 5-8 insights and 5-7 recommendations. Hotel context. Return ONLY JSON."
         if raw.startswith("json"): raw=raw[4:]
     return json.loads(raw.strip())
 
-async def run_ai_generation():
-    print("[ai] Starting generation...")
-    placeholder=supabase.table("ai_insights").insert({"status":"generating","generated_at":datetime.utcnow().isoformat()}).execute()
+async def run_ai_generation(org_id: str = None, period_type: str = "all_time"):
+    print(f"[ai] Starting generation — period={period_type} org={org_id}")
+    placeholder=supabase.table("ai_insights").insert({
+        "status":"generating",
+        "generated_at":datetime.utcnow().isoformat(),
+        "period_type": period_type,
+        "org_id": org_id,
+    }).execute()
     row_id=placeholder.data[0]["id"] if placeholder.data else None
     try:
-        stats=build_energy_summary_for_ai()
-        if not stats.get("electricity") and not stats.get("gas"): raise ValueError("No energy data")
-        result=await generate_ai_insights_data(stats)
+        start_date, end_date = get_period_date_range(period_type)
+        stats = build_energy_summary_for_period(start_date, end_date)
+        if not stats.get("electricity") and not stats.get("gas"): raise ValueError("No energy data for this period")
+        period_label = PERIOD_LABELS.get(period_type, "the selected period")
+        result=await generate_ai_insights_data(stats, period_label)
         data_from=stats.get("electricity",{}).get("data_from") or stats.get("gas",{}).get("data_from")
         data_to=stats.get("electricity",{}).get("data_to") or stats.get("gas",{}).get("data_to")
-        payload={"status":"complete","generated_at":datetime.utcnow().isoformat(),
-                 "data_from":data_from,"data_to":data_to,
-                 "executive_summary":result.get("executive_summary",""),
-                 "insights":result.get("insights",[]),"recommendations":result.get("recommendations",[]),
-                 "raw_stats":stats}
+        payload={
+            "status":"complete","generated_at":datetime.utcnow().isoformat(),
+            "period_type": period_type,
+            "data_from":data_from,"data_to":data_to,
+            "executive_summary":result.get("executive_summary",""),
+            "insights":result.get("insights",[]),"recommendations":result.get("recommendations",[]),
+            "raw_stats":stats
+        }
         if row_id: supabase.table("ai_insights").update(payload).eq("id",row_id).execute()
         else: supabase.table("ai_insights").insert(payload).execute()
-        print(f"[ai] Done — {len(result.get('insights',[]))} insights")
+        print(f"[ai] Done — {len(result.get('insights',[]))} insights for {period_type}")
     except Exception as e:
         print(f"[ai] Failed: {e}")
         if row_id: supabase.table("ai_insights").update({"status":"error","error_message":str(e)}).eq("id",row_id).execute()
 
+@app.get("/ai/insights/data-availability")
+def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
+                                    authorization: Optional[str]=Header(default=None)):
+    """
+    Check what data is available for insights generation.
+    Returns availability of electricity, gas, and BMS data,
+    plus generation status for each period type.
+    """
+    require_feature_jwt(authorization, org_id, "ai_insights")
+    try:
+        # Check electricity data
+        elec = supabase.table("energy_data").select("timestamp").order("timestamp", desc=False).limit(1).execute().data
+        elec_latest = supabase.table("energy_data").select("timestamp").order("timestamp", desc=True).limit(1).execute().data
+        elec_available = len(elec) > 0
+        elec_from = elec[0]["timestamp"][:10] if elec else None
+        elec_to = elec_latest[0]["timestamp"][:10] if elec_latest else None
+
+        # Check gas data
+        gas = supabase.table("gas_data").select("timestamp").order("timestamp", desc=False).limit(1).execute().data
+        gas_latest = supabase.table("gas_data").select("timestamp").order("timestamp", desc=True).limit(1).execute().data
+        gas_available = len(gas) > 0
+        gas_from = gas[0]["timestamp"][:10] if gas else None
+        gas_to = gas_latest[0]["timestamp"][:10] if gas_latest else None
+
+        # Check BMS data
+        bms_count = supabase.table("equipment_readings").select("id", count="exact").limit(1).execute()
+        bms_available = (bms_count.count or 0) > 0
+
+        # Check generation status per period
+        periods = {}
+        for period_type in ["all_time", "last_year", "last_3_months", "last_1_month"]:
+            allowed, reason, existing_id = check_generation_allowed(org_id or "", period_type)
+            # Get existing insight if any
+            existing = None
+            if existing_id:
+                row = supabase.table("ai_insights").select("id,generated_at,data_from,data_to").eq("id", existing_id).single().execute().data
+                if row: existing = {"id": row["id"], "generated_at": row["generated_at"], "data_from": row["data_from"], "data_to": row["data_to"]}
+            periods[period_type] = {
+                "label": PERIOD_LABELS[period_type],
+                "can_generate": allowed,
+                "reason": reason if not allowed else None,
+                "existing": existing,
+            }
+
+        return {
+            "electricity": {"available": elec_available, "from": elec_from, "to": elec_to},
+            "gas": {"available": gas_available, "from": gas_from, "to": gas_to},
+            "bms": {"available": bms_available},
+            "periods": periods,
+        }
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
 @app.get("/ai/insights")
 def get_ai_insights(org_id: Optional[str]=Query(default=None),
+                    period_type: Optional[str]=Query(default=None),
                     authorization: Optional[str]=Header(default=None)):
     require_feature_jwt(authorization,org_id,"ai_insights")
     try:
-        result=supabase.table("ai_insights").select("*").eq("status","complete").order("generated_at",desc=True).limit(1).execute()
+        query = supabase.table("ai_insights").select("*").eq("status","complete").order("generated_at",desc=True)
+        if period_type:
+            query = query.eq("period_type", period_type)
+        result = query.limit(1).execute()
         if not result.data:
-            pending=supabase.table("ai_insights").select("id,status").eq("status","generating").limit(1).execute()
-            if pending.data: return {"status":"generating","insights":None}
+            pending=supabase.table("ai_insights").select("id,status,period_type").eq("status","generating").order("generated_at",desc=True).limit(1).execute()
+            if pending.data: return {"status":"generating","insights":None,"period_type":pending.data[0].get("period_type")}
             return {"status":"empty","insights":None}
         row=result.data[0]
-        return {"status":"complete","generatedAt":row["generated_at"],"dataFrom":row["data_from"],
-                "dataTo":row["data_to"],"executiveSummary":row["executive_summary"],
-                "insights":row["insights"] or [],"recommendations":row["recommendations"] or []}
+        return {
+            "status":"complete","generatedAt":row["generated_at"],
+            "dataFrom":row["data_from"],"dataTo":row["data_to"],
+            "periodType":row.get("period_type","all_time"),
+            "periodLabel":PERIOD_LABELS.get(row.get("period_type","all_time"),""),
+            "executiveSummary":row["executive_summary"],
+            "insights":row["insights"] or [],"recommendations":row["recommendations"] or []
+        }
     except HTTPException: raise
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.post("/ai/insights/generate")
 async def trigger_ai_generation(background_tasks: BackgroundTasks,
                                  org_id: Optional[str]=Query(default=None),
+                                 period_type: str=Query(default="all_time"),
                                  authorization: Optional[str]=Header(default=None)):
     require_feature_jwt(authorization,org_id,"ai_insights")
     if not ANTHROPIC_API_KEY: return {"success":False,"message":"ANTHROPIC_API_KEY not configured"}
-    background_tasks.add_task(run_ai_generation)
-    return {"success":True,"message":"Generation started"}
+    if period_type not in PERIOD_LABELS:
+        return {"success":False,"message":f"Invalid period_type. Must be one of: {list(PERIOD_LABELS.keys())}"}
+
+    # Check if generation is already in progress
+    in_progress = supabase.table("ai_insights").select("id").eq("status","generating").limit(1).execute()
+    if in_progress.data:
+        return {"success":False,"message":"Generation already in progress. Please wait."}
+
+    # Check generation rules
+    allowed, reason, existing_id = check_generation_allowed(org_id or "", period_type)
+    if not allowed:
+        return {"success":False,"message":reason,"existing_id":existing_id,"blocked":True}
+
+    background_tasks.add_task(run_ai_generation, org_id=org_id, period_type=period_type)
+    return {"success":True,"message":f"Generation started for {PERIOD_LABELS[period_type]}","period_type":period_type}
 
 @app.get("/ai/insights/history")
-def get_ai_insights_history():
+def get_ai_insights_history(org_id: Optional[str]=Query(default=None)):
     try:
-        result=supabase.table("ai_insights").select("id,generated_at,data_from,data_to,status,error_message").order("generated_at",desc=True).limit(10).execute()
+        result=supabase.table("ai_insights").select("id,generated_at,data_from,data_to,status,error_message,period_type").order("generated_at",desc=True).limit(20).execute()
         return {"history":result.data or []}
     except Exception as e: return {"success":False,"message":str(e)}
 
