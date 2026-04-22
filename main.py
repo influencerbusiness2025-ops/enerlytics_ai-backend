@@ -2156,7 +2156,7 @@ async def run_full_anomaly_detection(org_id: str, days: int = 90, enrich_bms: bo
 
 @app.get("/anomalies")
 def get_anomalies(
-    days: int = Query(default=90, ge=7, le=90),
+    days: int = Query(default=90, ge=7, le=365),
     severity: Optional[str] = Query(default=None),
     anomaly_type: Optional[str] = Query(default=None),
     energy_type: Optional[str] = Query(default=None),
