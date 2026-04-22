@@ -1783,8 +1783,10 @@ def detect_statistical_anomalies(
     Detect statistical anomalies in electricity or gas data.
     Uses stored baselines if available, otherwise calculates on-the-fly.
     Returns list of anomaly dicts ready for DB insert.
+    Hard-limited to last 90 days regardless of input.
     """
     try:
+        days = min(days, 90)  # Hard cap — never scan more than 3 months
         cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
         table = "energy_data" if energy_type == "electricity" else "gas_data"
         q = (supabase.table(table).select("timestamp,consumption")
@@ -2096,7 +2098,8 @@ async def run_full_anomaly_detection(org_id: str, days: int = 90, enrich_bms: bo
     Run all three layers of anomaly detection for an org.
     Saves results to anomalies table and sends alerts.
     """
-    print(f"[anomaly] Starting full detection for org={org_id} days={days}")
+    days = min(days, 90)  # Hard cap — never scan more than 3 months
+    print(f"[anomaly] Starting full detection for org={org_id} days={days} (max 90)")
     saved = 0
     alerts_sent = 0
 
@@ -2153,7 +2156,7 @@ async def run_full_anomaly_detection(org_id: str, days: int = 90, enrich_bms: bo
 
 @app.get("/anomalies")
 def get_anomalies(
-    days: int = Query(default=90, ge=7, le=365),
+    days: int = Query(default=90, ge=7, le=90),
     severity: Optional[str] = Query(default=None),
     anomaly_type: Optional[str] = Query(default=None),
     energy_type: Optional[str] = Query(default=None),
@@ -2307,10 +2310,10 @@ def acknowledge_anomaly(anomaly_id: str, authorization: Optional[str] = Header(d
 async def trigger_anomaly_detection(
     background_tasks: BackgroundTasks,
     org_id: Optional[str] = Query(default=None),
-    days: int = Query(default=90, ge=7, le=365),
+    days: int = Query(default=90, ge=7, le=90),
     authorization: Optional[str] = Header(default=None)
 ):
-    """Trigger a fresh anomaly detection run."""
+    """Trigger a fresh anomaly detection run. Always scans last 90 days max."""
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
@@ -2319,8 +2322,8 @@ async def trigger_anomaly_detection(
         except: pass
     if not resolved_org_id:
         raise HTTPException(status_code=400, detail="org_id required")
-    background_tasks.add_task(run_full_anomaly_detection, org_id=resolved_org_id, days=days)
-    return {"success": True, "message": f"Anomaly detection started for last {days} days"}
+    background_tasks.add_task(run_full_anomaly_detection, org_id=resolved_org_id, days=90)
+    return {"success": True, "message": "Anomaly detection started for last 90 days (3 months)"}
 
 
 @app.get("/anomalies/trends/summary")
