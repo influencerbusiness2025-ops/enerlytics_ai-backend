@@ -1599,16 +1599,14 @@ def _build_baselines_from_df(df: pd.DataFrame) -> dict:
 
 def _detect_energy_anomalies(org_id: str, energy_type: str) -> list:
     """
-    Detect anomalies in electricity or gas data for the last 90 days.
-    Returns list of anomaly dicts ready for DB insert.
+    Detect anomalies across ALL available data for this org.
+    No date cutoff — scans whatever data exists in the DB.
     """
     table = "energy_data" if energy_type == "electricity" else "gas_data"
-    cutoff = (datetime.utcnow() - timedelta(days=90)).isoformat()
 
     data = (supabase.table(table)
             .select("timestamp,consumption")
             .eq("org_id", org_id)
-            .gte("timestamp", cutoff)
             .range(0, 50000)
             .execute().data) or []
 
@@ -1707,7 +1705,6 @@ def _detect_bms_anomalies(org_id: str) -> list:
     """
     anomalies = []
     now = datetime.utcnow()
-    cutoff = (now - timedelta(days=90)).isoformat()
 
     try:
         equipment_rows = (supabase.table("equipment")
@@ -1726,7 +1723,6 @@ def _detect_bms_anomalies(org_id: str) -> list:
                 readings = (supabase.table("equipment_readings")
                             .select("recorded_at,value,value_text")
                             .eq("parameter_id", param["id"])
-                            .gte("recorded_at", cutoff)
                             .order("recorded_at", desc=True)
                             .limit(500)
                             .execute().data) or []
