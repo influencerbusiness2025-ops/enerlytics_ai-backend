@@ -578,43 +578,64 @@ def parse_bms_csv(contents: bytes, parameter_id: str) -> List[dict]:
 
 ANALYST_TOOLS = [
     {"name":"get_hourly_data",
-     "description":"Get actual hourly energy consumption for a specific date or range.",
+     "description":"Get actual hourly electricity consumption for a specific date or range.",
      "input_schema":{"type":"object","properties":{
          "start_date":{"type":"string","description":"Start date YYYY-MM-DD"},
          "end_date":{"type":"string","description":"End date YYYY-MM-DD"},
          "hour":{"type":"integer","description":"Specific hour 0-23","minimum":0,"maximum":23}},
          "required":["start_date","end_date"]}},
     {"name":"get_daily_summary",
-     "description":"Get daily total consumption and cost for a date range.",
+     "description":"Get daily total electricity consumption and cost for a date range.",
      "input_schema":{"type":"object","properties":{
          "start_date":{"type":"string"},"end_date":{"type":"string"}},
          "required":["start_date","end_date"]}},
     {"name":"get_anomalies",
-     "description":"Get detected anomalies for a period.",
+     "description":"Get detected energy anomalies (spikes/drops) for a period.",
      "input_schema":{"type":"object","properties":{
          "start_date":{"type":"string"},"end_date":{"type":"string"},
          "severity":{"type":"string","enum":["high","medium","low"]}},
          "required":["start_date","end_date"]}},
     {"name":"get_peak_hours",
-     "description":"Find highest/lowest consumption hours.",
+     "description":"Find highest/lowest electricity consumption hours.",
      "input_schema":{"type":"object","properties":{
          "start_date":{"type":"string"},"end_date":{"type":"string"},
          "top_n":{"type":"integer","default":5}},
          "required":["start_date","end_date"]}},
     {"name":"compare_periods",
-     "description":"Compare energy consumption between two time periods.",
+     "description":"Compare electricity consumption between two time periods.",
      "input_schema":{"type":"object","properties":{
          "period1_start":{"type":"string"},"period1_end":{"type":"string"},
          "period2_start":{"type":"string"},"period2_end":{"type":"string"}},
          "required":["period1_start","period1_end","period2_start","period2_end"]}},
     {"name":"get_monthly_stats",
-     "description":"Get monthly consumption breakdown for a year.",
+     "description":"Get monthly electricity consumption breakdown for a year.",
      "input_schema":{"type":"object","properties":{
          "year":{"type":"integer","description":"Year e.g. 2024"}},
          "required":["year"]}},
+    {"name":"get_gas_data",
+     "description":"Get gas consumption data for a date range. Returns daily totals and summary stats.",
+     "input_schema":{"type":"object","properties":{
+         "start_date":{"type":"string","description":"Start date YYYY-MM-DD"},
+         "end_date":{"type":"string","description":"End date YYYY-MM-DD"}},
+         "required":["start_date","end_date"]}},
+    {"name":"get_site_equipment",
+     "description":"Get all BMS equipment for the site, grouped by category (heating/cooling/ventilation/pumps). Shows equipment names, categories, and whether any faults are active.",
+     "input_schema":{"type":"object","properties":{
+         "category":{"type":"string","description":"Filter by category: heating, cooling, ventilation, pumps, lighting, other. Leave empty for all."}},
+         "required":[]}},
+    {"name":"get_equipment_readings",
+     "description":"Get BMS parameter readings for a specific piece of equipment. Provide equipment_name (e.g. AHU-01) or equipment_id. Returns all parameters with recent values: temperatures, on/off status, run hours, valve positions, fault alarms.",
+     "input_schema":{"type":"object","properties":{
+         "equipment_name":{"type":"string","description":"Equipment name e.g. AHU-01, Chiller-1, Boiler"},
+         "start_date":{"type":"string","description":"Start date YYYY-MM-DD"},
+         "end_date":{"type":"string","description":"End date YYYY-MM-DD"}},
+         "required":["start_date","end_date"]}},
+    {"name":"get_active_faults",
+     "description":"Get all currently active BMS fault alarms across all equipment on the site. Always call this first when asked about equipment problems or faults.",
+     "input_schema":{"type":"object","properties":{},"required":[]}},
 ]
 
-def execute_tool(tool_name,tool_input):
+def execute_tool(tool_name, tool_input):
     try:
         if tool_name=="get_hourly_data":
             return _tool_get_hourly_data(tool_input["start_date"],tool_input["end_date"],tool_input.get("hour"))
@@ -629,8 +650,185 @@ def execute_tool(tool_name,tool_input):
                                          tool_input["period2_start"],tool_input["period2_end"])
         elif tool_name=="get_monthly_stats":
             return _tool_get_monthly_stats(tool_input["year"])
+        elif tool_name=="get_gas_data":
+            return _tool_get_gas_data(tool_input["start_date"],tool_input["end_date"])
+        elif tool_name=="get_site_equipment":
+            return _tool_get_site_equipment(tool_input.get("category"))
+        elif tool_name=="get_equipment_readings":
+            return _tool_get_equipment_readings(
+                tool_input.get("equipment_name",""),
+                tool_input["start_date"],tool_input["end_date"])
+        elif tool_name=="get_active_faults":
+            return _tool_get_active_faults()
         return f"Unknown tool: {tool_name}"
     except Exception as e: return f"Tool error: {str(e)}"
+
+
+def _tool_get_gas_data(start_date, end_date):
+    data=(supabase.table("gas_data").select("timestamp,consumption")
+          .gte("timestamp",start_date).lte("timestamp",end_date+"T23:59:59")
+          .range(0,20000).execute().data) or []
+    if not data: return f"No gas data for {start_date} to {end_date}"
+    df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
+    df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
+    df["date"]=df["timestamp"].dt.date.astype(str)
+    daily=df.groupby("date")["consumption"].sum()
+    total=round(float(df["consumption"].sum()),2)
+    cost=round(total*GAS_RATE_GBP,2)
+    result=[f"Gas data {start_date} to {end_date}:",
+            f"Total: {total} kWh (£{cost})",
+            f"Daily avg: {round(float(daily.mean()),2)} kWh",
+            f"Peak: {daily.idxmax()} — {round(float(daily.max()),2)} kWh",
+            "Daily breakdown:"]
+    for date,kwh in daily.items():
+        result.append(f"  {date}: {round(float(kwh),2)} kWh (£{round(float(kwh)*GAS_RATE_GBP,2)})")
+    return "\n".join(result)
+
+
+def _tool_get_site_equipment(category=None):
+    try:
+        query = supabase.table("equipment").select("id,name,category,manufacturer,model,bms_ref").eq("is_active",True)
+        if category:
+            query = query.eq("category", category)
+        equipment_rows = query.order("category").order("name").execute().data or []
+        if not equipment_rows:
+            return "No equipment configured on this site yet."
+        cutoff = (datetime.utcnow() - timedelta(days=1)).isoformat()
+        result = [f"Site equipment ({len(equipment_rows)} items):"]
+        by_cat = {}
+        for eq in equipment_rows:
+            cat = eq["category"]
+            if cat not in by_cat: by_cat[cat] = []
+            # Check for active faults
+            params = (supabase.table("equipment_parameters")
+                      .select("id,parameter_type")
+                      .eq("equipment_id", eq["id"])
+                      .eq("parameter_type","fault_alarm").execute().data) or []
+            has_fault = False
+            for p in params:
+                latest = (supabase.table("equipment_readings")
+                          .select("value,value_text")
+                          .eq("parameter_id",p["id"])
+                          .order("recorded_at",desc=True).limit(1).execute().data)
+                if latest:
+                    v = str(latest[0].get("value","")).strip()
+                    vt = str(latest[0].get("value_text","")).lower()
+                    if v in ("1","1.0") or vt in ("fault","alarm","true","active"):
+                        has_fault = True
+            fault_flag = " *** FAULT ACTIVE ***" if has_fault else ""
+            by_cat[cat].append(f"  - {eq['name']}{' ('+eq['manufacturer']+')' if eq.get('manufacturer') else ''}{fault_flag} [id:{eq['id']}]")
+        for cat, items in by_cat.items():
+            result.append(f"\n{cat.upper()}:")
+            result.extend(items)
+        return "\n".join(result)
+    except Exception as e:
+        return f"Error fetching equipment: {e}"
+
+
+def _tool_get_equipment_readings(equipment_name, start_date, end_date):
+    try:
+        # Find equipment by name
+        query = supabase.table("equipment").select("id,name,category").eq("is_active",True)
+        if equipment_name:
+            # Try exact match first, then ilike
+            exact = query.eq("name", equipment_name).execute().data
+            if exact:
+                equipment_rows = exact
+            else:
+                equipment_rows = (supabase.table("equipment").select("id,name,category")
+                                  .eq("is_active",True)
+                                  .ilike("name", f"%{equipment_name}%").execute().data) or []
+        else:
+            equipment_rows = query.execute().data or []
+
+        if not equipment_rows:
+            return f"No equipment found matching '{equipment_name}'. Use get_site_equipment to see available equipment."
+
+        result = []
+        for eq in equipment_rows[:3]:  # Limit to 3 equipment max
+            result.append(f"\n{eq['category'].upper()} — {eq['name']}:")
+            params = (supabase.table("equipment_parameters")
+                      .select("id,parameter_name,parameter_type,unit")
+                      .eq("equipment_id",eq["id"]).execute().data) or []
+            if not params:
+                result.append("  No parameters configured.")
+                continue
+            for param in params:
+                readings = (supabase.table("equipment_readings")
+                            .select("recorded_at,value,value_text")
+                            .eq("parameter_id",param["id"])
+                            .gte("recorded_at",start_date)
+                            .lte("recorded_at",end_date+"T23:59:59")
+                            .order("recorded_at",desc=True)
+                            .limit(200).execute().data) or []
+                if not readings:
+                    result.append(f"  {param['parameter_name']} ({param['parameter_type']}): no data in range")
+                    continue
+                unit = param.get("unit") or ""
+                ptype = param["parameter_type"]
+                latest = readings[0]
+                latest_val = latest.get("value_text") or latest.get("value")
+                if ptype in ("flow_temp","return_temp","setpoint_temp","sensor","Htg_Vlv_pos","Clg_Vlv_Pos","Flow_Pressure_SP","Run_Speed"):
+                    vals = [float(r["value"]) for r in readings if r.get("value") is not None]
+                    if vals:
+                        result.append(f"  {param['parameter_name']}: latest={vals[0]}{unit} avg={round(sum(vals)/len(vals),1)}{unit} min={round(min(vals),1)}{unit} max={round(max(vals),1)}{unit} ({len(vals)} readings)")
+                elif ptype == "on_off":
+                    on = sum(1 for r in readings if str(r.get("value","")).strip() in ("1","1.0") or str(r.get("value_text","")).lower() in ("on","true"))
+                    result.append(f"  {param['parameter_name']}: currently {latest_val} | ON {round(on/len(readings)*100)}% of {len(readings)} readings")
+                elif ptype == "fault_alarm":
+                    faults = [r for r in readings if str(r.get("value","")).strip() in ("1","1.0") or str(r.get("value_text","")).lower() in ("fault","alarm","true","active")]
+                    if faults:
+                        result.append(f"  *** {param['parameter_name']}: FAULT ACTIVE — {len(faults)} fault events, last at {faults[0]['recorded_at']} ***")
+                    else:
+                        result.append(f"  {param['parameter_name']}: no faults in period")
+                elif ptype == "run_hours":
+                    vals = [float(r["value"]) for r in readings if r.get("value") is not None]
+                    if vals:
+                        result.append(f"  {param['parameter_name']}: {vals[0]}{unit} (latest)")
+                elif ptype == "mode":
+                    from collections import Counter
+                    modes = [str(r.get("value_text") or r.get("value","")).strip() for r in readings if r.get("value_text") or r.get("value")]
+                    if modes:
+                        dist = ", ".join(f"{m}:{c}" for m,c in Counter(modes).most_common())
+                        result.append(f"  {param['parameter_name']}: currently {modes[0]} | distribution: {dist}")
+                else:
+                    result.append(f"  {param['parameter_name']}: {latest_val}{unit} (latest)")
+        return "\n".join(result)
+    except Exception as e:
+        return f"Error fetching equipment readings: {e}"
+
+
+def _tool_get_active_faults():
+    try:
+        equipment_rows = (supabase.table("equipment").select("id,name,category")
+                          .eq("is_active",True).execute().data) or []
+        if not equipment_rows:
+            return "No equipment configured on this site."
+        cutoff = (datetime.utcnow() - timedelta(days=1)).isoformat()
+        active_faults = []
+        for eq in equipment_rows:
+            fault_params = (supabase.table("equipment_parameters")
+                            .select("id,parameter_name")
+                            .eq("equipment_id",eq["id"])
+                            .eq("parameter_type","fault_alarm").execute().data) or []
+            for param in fault_params:
+                latest = (supabase.table("equipment_readings")
+                          .select("recorded_at,value,value_text")
+                          .eq("parameter_id",param["id"])
+                          .gte("recorded_at",cutoff)
+                          .order("recorded_at",desc=True).limit(1).execute().data)
+                if latest:
+                    v = str(latest[0].get("value","")).strip()
+                    vt = str(latest[0].get("value_text","")).lower()
+                    if v in ("1","1.0") or vt in ("fault","alarm","true","active"):
+                        active_faults.append(
+                            f"  *** FAULT: {eq['category'].upper()} — {eq['name']} | {param['parameter_name']} | Last triggered: {latest[0]['recorded_at']} ***"
+                        )
+        if not active_faults:
+            return "No active faults detected across all equipment in the last 24 hours."
+        return "ACTIVE FAULTS:\n" + "\n".join(active_faults)
+    except Exception as e:
+        return f"Error checking faults: {e}"
 
 def _tool_get_hourly_data(start_date,end_date,hour=None):
     data=(supabase.table("energy_data").select("timestamp,consumption")
@@ -1553,75 +1751,109 @@ def build_energy_summary_for_period(start_date=None, end_date=None):
     }
     return summary
 
-async def generate_ai_insights_data(stats, period_label="the analysis period"):
-    elec,gas,comb=stats.get("electricity",{}),stats.get("gas",{}),stats.get("combined",{})
-    data_from = elec.get("data_from") or gas.get("data_from","unknown")
-    data_to = elec.get("data_to") or gas.get("data_to","unknown")
-    days = elec.get("days_of_data") or 0
-    if days >= 365:
-        period_desc = f"{round(days/365,1)} years ({data_from} to {data_to})"
-    elif days >= 30:
-        period_desc = f"{round(days/30,1)} months ({data_from} to {data_to})"
-    else:
-        period_desc = f"{days} days ({data_from} to {data_to})"
+async def run_agentic_analysis(system_prompt: str, user_prompt: str, max_iterations: int = 10) -> str:
+    """Agentic loop with full tool access — electricity, gas, BMS equipment."""
+    messages = [{"role": "user", "content": user_prompt}]
+    final_response = ""
+    for iteration in range(max_iterations):
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post("https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                json={"model": ANTHROPIC_MODEL, "max_tokens": 6000, "system": system_prompt, "tools": ANALYST_TOOLS, "messages": messages})
+            resp.raise_for_status()
+            result = resp.json()
+        stop_reason = result.get("stop_reason")
+        content = result.get("content", [])
+        text_parts = [b["text"] for b in content if b["type"] == "text"]
+        if text_parts: final_response = "\n".join(text_parts)
+        if stop_reason == "end_turn": break
+        if stop_reason == "tool_use":
+            tool_blocks = [b for b in content if b["type"] == "tool_use"]
+            messages.append({"role": "assistant", "content": content})
+            tool_results = []
+            for tb in tool_blocks:
+                print(f"[agentic] Tool: {tb['name']} — {tb['input']}")
+                tool_results.append({"type": "tool_result", "tool_use_id": tb["id"], "content": execute_tool(tb["name"], tb["input"])})
+            messages.append({"role": "user", "content": tool_results})
+        else:
+            break
+    return final_response
 
-    prompt=f"""You are an expert energy analyst. Analyse this building energy data and return ONLY valid JSON.
-ANALYSIS PERIOD: {period_desc} | Period label: {period_label}
-ELECTRICITY: total={elec.get("total_kwh")}kWh cost=£{elec.get("total_cost_gbp")} avg_daily={elec.get("avg_daily_kwh")}kWh
-baseload={elec.get("baseload_kwh")}kWh/h peak_hour={elec.get("peak_hour")}:00 off_hours={elec.get("off_hours_pct")}%
-weekday={elec.get("avg_weekday_daily")}kWh weekend={elec.get("avg_weekend_daily")}kWh mom={elec.get("month_on_month_pct")}%
-monthly={json.dumps(elec.get("monthly_breakdown",{}))} period={data_from} to {data_to}
-GAS: total={gas.get("total_kwh")}kWh cost=£{gas.get("total_cost_gbp")}
-COMBINED: total={comb.get("total_energy_kwh")}kWh cost=£{comb.get("total_cost_gbp")}
-Return ONLY this JSON:
-{{"executive_summary":"2-3 sentences for business owner. MUST mention the analysis period e.g. \'Based on {period_desc} of data...\'",
-"insights":[{{"id":"slug","category":"baseload|peak_demand|off_hours|weekday_weekend|seasonal|gas|cost|trend",
-"title":"Short title","finding":"2-3 sentences with numbers","implication":"Why this matters",
-"severity":"high|medium|low|positive","audience":["facilities","consultant","executive"],
-"metric":"key number","metric_label":"label"}}],
-"recommendations":[{{"id":"slug","title":"Action title","action":"Specific step","rationale":"Why",
-"saving_kwh_monthly":0,"saving_gbp_monthly":0,"effort":"low|medium|high",
-"timeframe":"immediate|1_month|3_months|6_months","payback_months":0,
-"category":"behavioural|controls|equipment|monitoring|procurement",
-"audience":["facilities","consultant","executive"],"priority":"quick_win|medium_term|long_term"}}]}}
-Generate 5-8 insights and 5-7 recommendations. Hotel context. Return ONLY JSON."""
-    raw=await call_claude(prompt); raw=raw.strip()
-    if raw.startswith("```"):
-        raw=raw.split("```")[1]
-        if raw.startswith("json"): raw=raw[4:]
-    return json.loads(raw.strip())
 
 async def run_ai_generation(org_id: str = None, period_type: str = "all_time"):
-    print(f"[ai] Starting generation — period={period_type} org={org_id}")
-    placeholder=supabase.table("ai_insights").insert({
-        "status":"generating",
-        "generated_at":datetime.utcnow().isoformat(),
-        "period_type": period_type,
-        "org_id": org_id,
+    print(f"[ai] Starting agentic generation — period={period_type} org={org_id}")
+    placeholder = supabase.table("ai_insights").insert({
+        "status": "generating", "generated_at": datetime.utcnow().isoformat(),
+        "period_type": period_type, "org_id": org_id,
     }).execute()
-    row_id=placeholder.data[0]["id"] if placeholder.data else None
+    row_id = placeholder.data[0]["id"] if placeholder.data else None
     try:
         start_date, end_date = get_period_date_range(period_type)
-        stats = build_energy_summary_for_period(start_date, end_date)
-        if not stats.get("electricity") and not stats.get("gas"): raise ValueError("No energy data for this period")
         period_label = PERIOD_LABELS.get(period_type, "the selected period")
-        result=await generate_ai_insights_data(stats, period_label)
-        data_from=stats.get("electricity",{}).get("data_from") or stats.get("gas",{}).get("data_from")
-        data_to=stats.get("electricity",{}).get("data_to") or stats.get("gas",{}).get("data_to")
-        payload={
-            "status":"complete","generated_at":datetime.utcnow().isoformat(),
-            "period_type": period_type,
-            "data_from":data_from,"data_to":data_to,
-            "executive_summary":result.get("executive_summary",""),
-            "insights":result.get("insights",[]),"recommendations":result.get("recommendations",[]),
-            "raw_stats":stats
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        date_range_str = f"{start_date or 'all available'} to {end_date}"
+
+        system_prompt = f"""You are an expert energy analyst generating a structured analysis report.
+Today: {today} | Period: {period_label} ({date_range_str})
+UK rates: Electricity £{ELECTRICITY_RATE_GBP}/kWh | Gas £{GAS_RATE_GBP}/kWh | Carbon: 0.207 kgCO2/kWh
+
+Use your tools to gather data from ALL sources — electricity, gas, and BMS equipment — then produce a JSON report.
+
+REQUIRED: Call these tools before producing output:
+1. get_active_faults — check equipment faults
+2. get_site_equipment — list all equipment
+3. get_monthly_stats with appropriate year(s)
+4. get_gas_data for the period
+5. get_anomalies for the period
+6. get_equipment_readings for any equipment found
+
+Then return ONLY this JSON:
+{{
+  "executive_summary": "3-4 sentences mentioning: period ({period_label}), total combined cost, key finding from electricity+gas+BMS data, biggest saving opportunity.",
+  "insights": [{{
+    "id": "slug", "category": "baseload|peak_demand|off_hours|weekday_weekend|seasonal|gas|cost|trend|equipment|fault",
+    "title": "Title", "finding": "Specific finding with numbers from tool calls",
+    "implication": "Business impact", "severity": "high|medium|low|positive",
+    "audience": ["facilities","consultant","executive"], "metric": "number", "metric_label": "unit"
+  }}],
+  "recommendations": [{{
+    "id": "slug", "title": "Action", "action": "Specific step", "rationale": "Why",
+    "saving_kwh_monthly": 0, "saving_gbp_monthly": 0, "effort": "low|medium|high",
+    "timeframe": "immediate|1_month|3_months|6_months", "payback_months": 0,
+    "category": "behavioural|controls|equipment|monitoring|procurement|bms",
+    "audience": ["facilities","consultant","executive"], "priority": "quick_win|medium_term|long_term",
+    "data_source": "electricity|gas|bms|combined"
+  }}]
+}}
+Generate 6-10 insights and 6-8 recommendations. Cover all data sources. Flag active faults as high severity. Return ONLY JSON."""
+
+        user_prompt = f"Generate comprehensive energy analysis for: {period_label} ({date_range_str}). Check faults first, then gather all electricity, gas, and BMS equipment data before producing your JSON report."
+
+        raw = await run_agentic_analysis(system_prompt, user_prompt, max_iterations=12)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"): raw = raw[4:]
+        raw = raw.strip()
+        start_idx = raw.find("{"); end_idx = raw.rfind("}") + 1
+        if start_idx >= 0 and end_idx > start_idx: raw = raw[start_idx:end_idx]
+        result = json.loads(raw)
+
+        payload = {
+            "status": "complete", "generated_at": datetime.utcnow().isoformat(),
+            "period_type": period_type, "data_from": start_date, "data_to": end_date,
+            "executive_summary": result.get("executive_summary", ""),
+            "insights": result.get("insights", []), "recommendations": result.get("recommendations", []),
+            "raw_stats": {"period_type": period_type, "date_range": date_range_str}
         }
-        if row_id: supabase.table("ai_insights").update(payload).eq("id",row_id).execute()
+        if row_id: supabase.table("ai_insights").update(payload).eq("id", row_id).execute()
         else: supabase.table("ai_insights").insert(payload).execute()
-        print(f"[ai] Done — {len(result.get('insights',[]))} insights for {period_type}")
+        print(f"[ai] Done — {len(result.get('insights', []))} insights, {len(result.get('recommendations', []))} recs")
     except Exception as e:
         print(f"[ai] Failed: {e}")
-        if row_id: supabase.table("ai_insights").update({"status":"error","error_message":str(e)}).eq("id",row_id).execute()
+        import traceback; traceback.print_exc()
+        if row_id: supabase.table("ai_insights").update({"status": "error", "error_message": str(e)}).eq("id", row_id).execute()
+
 
 @app.get("/ai/insights/data-availability")
 def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
@@ -1731,6 +1963,137 @@ def get_ai_insights_history(org_id: Optional[str]=Query(default=None)):
         result=supabase.table("ai_insights").select("id,generated_at,data_from,data_to,status,error_message,period_type").order("generated_at",desc=True).limit(20).execute()
         return {"history":result.data or []}
     except Exception as e: return {"success":False,"message":str(e)}
+
+
+# ─── AI RECOMMENDATIONS ───────────────────────────────────────
+
+async def run_recommendations_generation(org_id: str = None):
+    """
+    Generate always-live action recommendations using full data access.
+    Covers electricity + gas + BMS equipment.
+    Uses last 30 days as the primary window for freshness.
+    """
+    print(f"[recs] Starting recommendations generation for org={org_id}")
+    placeholder = supabase.table("ai_recommendations").insert({
+        "status": "generating", "generated_at": datetime.utcnow().isoformat(), "org_id": org_id,
+    }).execute()
+    row_id = placeholder.data[0]["id"] if placeholder.data else None
+    try:
+        today = datetime.utcnow().strftime("%Y-%m-%d")
+        start_30d = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        system_prompt = f"""You are an expert energy consultant generating a prioritised action list for a building operator.
+Today: {today} | Data window: last 30 days ({start_30d} to {today})
+UK rates: Electricity £{ELECTRICITY_RATE_GBP}/kWh | Gas £{GAS_RATE_GBP}/kWh
+
+Use your tools to gather current data from electricity, gas, and BMS equipment, then produce a prioritised action list.
+
+REQUIRED tool calls:
+1. get_active_faults — URGENT: any active faults need immediate action
+2. get_site_equipment — understand what equipment exists
+3. get_daily_summary start={start_30d} end={today} — recent electricity
+4. get_gas_data start={start_30d} end={today} — recent gas
+5. get_anomalies start={start_30d} end={today} — recent anomalies
+6. get_equipment_readings for key equipment — check temperatures, run hours, valve positions
+
+Then return ONLY this JSON:
+{{
+  "generated_at": "{today}",
+  "data_window": "Last 30 days",
+  "summary": "2 sentences: current energy spend rate + top priority action right now",
+  "quick_wins": [{{
+    "id": "slug", "title": "Action title", "action": "Exactly what to do",
+    "why": "What data shows this is needed", "saving_gbp_monthly": 0,
+    "saving_kwh_monthly": 0, "effort": "low", "can_do_today": true,
+    "data_source": "electricity|gas|bms|combined"
+  }}],
+  "medium_term": [{{
+    "id": "slug", "title": "Action title", "action": "Exactly what to do",
+    "why": "What data shows this is needed", "saving_gbp_monthly": 0,
+    "saving_kwh_monthly": 0, "effort": "medium", "timeframe": "1-3 months",
+    "investment_gbp": 0, "payback_months": 0, "data_source": "electricity|gas|bms|combined"
+  }}],
+  "long_term": [{{
+    "id": "slug", "title": "Action title", "action": "Exactly what to do",
+    "why": "What data shows this is needed", "saving_gbp_monthly": 0,
+    "saving_kwh_monthly": 0, "effort": "high", "timeframe": "3-12 months",
+    "investment_gbp": 0, "payback_months": 0, "data_source": "electricity|gas|bms|combined"
+  }}],
+  "urgent_alerts": [{{
+    "id": "slug", "type": "fault|anomaly|threshold",
+    "title": "Alert title", "detail": "What was found and why it needs attention now",
+    "equipment": "equipment name if applicable", "action": "What to do immediately"
+  }}]
+}}
+
+Generate 3-5 quick wins, 3-4 medium term, 2-3 long term. Add urgent_alerts for any active faults or anomalies.
+Base everything on actual data from your tool calls. Return ONLY JSON."""
+
+        user_prompt = f"Generate a fresh prioritised action list for today ({today}). Check faults first, then review last 30 days of electricity, gas, and BMS equipment data."
+
+        raw = await run_agentic_analysis(system_prompt, user_prompt, max_iterations=10)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"): raw = raw[4:]
+        raw = raw.strip()
+        start_idx = raw.find("{"); end_idx = raw.rfind("}") + 1
+        if start_idx >= 0 and end_idx > start_idx: raw = raw[start_idx:end_idx]
+        result = json.loads(raw)
+
+        payload = {
+            "status": "complete", "generated_at": datetime.utcnow().isoformat(), "org_id": org_id,
+            "summary": result.get("summary", ""),
+            "quick_wins": result.get("quick_wins", []),
+            "medium_term": result.get("medium_term", []),
+            "long_term": result.get("long_term", []),
+            "urgent_alerts": result.get("urgent_alerts", []),
+        }
+        if row_id: supabase.table("ai_recommendations").update(payload).eq("id", row_id).execute()
+        else: supabase.table("ai_recommendations").insert(payload).execute()
+        print(f"[recs] Done — {len(result.get('quick_wins',[]))} quick wins, {len(result.get('urgent_alerts',[]))} alerts")
+    except Exception as e:
+        print(f"[recs] Failed: {e}")
+        import traceback; traceback.print_exc()
+        if row_id: supabase.table("ai_recommendations").update({"status": "error", "error_message": str(e)}).eq("id", row_id).execute()
+
+
+@app.get("/ai/recommendations")
+def get_recommendations(org_id: Optional[str]=Query(default=None),
+                         authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization, org_id, "ai_recommendations")
+    try:
+        query = supabase.table("ai_recommendations").select("*").eq("status", "complete").order("generated_at", desc=True)
+        if org_id: query = query.eq("org_id", org_id)
+        result = query.limit(1).execute()
+        if not result.data:
+            pending = supabase.table("ai_recommendations").select("id,status").eq("status","generating").limit(1).execute()
+            if pending.data: return {"status": "generating"}
+            return {"status": "empty"}
+        row = result.data[0]
+        return {
+            "status": "complete",
+            "generatedAt": row["generated_at"],
+            "summary": row.get("summary", ""),
+            "quickWins": row.get("quick_wins", []),
+            "mediumTerm": row.get("medium_term", []),
+            "longTerm": row.get("long_term", []),
+            "urgentAlerts": row.get("urgent_alerts", []),
+        }
+    except HTTPException: raise
+    except Exception as e: return {"success": False, "message": str(e)}
+
+
+@app.post("/ai/recommendations/generate")
+async def trigger_recommendations(background_tasks: BackgroundTasks,
+                                   org_id: Optional[str]=Query(default=None),
+                                   authorization: Optional[str]=Header(default=None)):
+    require_feature_jwt(authorization, org_id, "ai_recommendations")
+    if not ANTHROPIC_API_KEY: return {"success": False, "message": "ANTHROPIC_API_KEY not configured"}
+    in_progress = supabase.table("ai_recommendations").select("id").eq("status","generating").limit(1).execute()
+    if in_progress.data: return {"success": False, "message": "Generation already in progress"}
+    background_tasks.add_task(run_recommendations_generation, org_id=org_id)
+    return {"success": True, "message": "Recommendations generation started"}
 
 # ─── AI ANALYST ───────────────────────────────────────────────
 
