@@ -309,9 +309,12 @@ async def call_claude(prompt,max_tokens=4000):
             json={"model":ANTHROPIC_MODEL,"max_tokens":max_tokens,"messages":[{"role":"user","content":prompt}]})
         r.raise_for_status(); return r.json()["content"][0]["text"]
 
-def build_energy_summary_for_ai():
-    elec_data=(supabase.table("energy_data").select("timestamp,consumption").range(0,20000).execute().data) or []
-    gas_data=(supabase.table("gas_data").select("timestamp,consumption").range(0,20000).execute().data) or []
+def build_energy_summary_for_ai(org_id=None):
+    elec_q=supabase.table("energy_data").select("timestamp,consumption").range(0,20000)
+    gas_q=supabase.table("gas_data").select("timestamp,consumption").range(0,20000)
+    if org_id: elec_q=elec_q.eq("org_id",org_id); gas_q=gas_q.eq("org_id",org_id)
+    elec_data=elec_q.execute().data or []
+    gas_data=gas_q.execute().data or []
     summary={}
     if elec_data:
         df=pd.DataFrame(elec_data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
@@ -635,23 +638,23 @@ ANALYST_TOOLS = [
      "input_schema":{"type":"object","properties":{},"required":[]}},
 ]
 
-def execute_tool(tool_name, tool_input):
+def execute_tool(tool_name, tool_input, org_id=None):
     try:
         if tool_name=="get_hourly_data":
-            return _tool_get_hourly_data(tool_input["start_date"],tool_input["end_date"],tool_input.get("hour"))
+            return _tool_get_hourly_data(tool_input["start_date"],tool_input["end_date"],tool_input.get("hour"),org_id=org_id)
         elif tool_name=="get_daily_summary":
-            return _tool_get_daily_summary(tool_input["start_date"],tool_input["end_date"])
+            return _tool_get_daily_summary(tool_input["start_date"],tool_input["end_date"],org_id=org_id)
         elif tool_name=="get_anomalies":
-            return _tool_get_anomalies(tool_input["start_date"],tool_input["end_date"],tool_input.get("severity"))
+            return _tool_get_anomalies(tool_input["start_date"],tool_input["end_date"],tool_input.get("severity"),org_id=org_id)
         elif tool_name=="get_peak_hours":
-            return _tool_get_peak_hours(tool_input["start_date"],tool_input["end_date"],tool_input.get("top_n",5))
+            return _tool_get_peak_hours(tool_input["start_date"],tool_input["end_date"],tool_input.get("top_n",5),org_id=org_id)
         elif tool_name=="compare_periods":
             return _tool_compare_periods(tool_input["period1_start"],tool_input["period1_end"],
-                                         tool_input["period2_start"],tool_input["period2_end"])
+                                         tool_input["period2_start"],tool_input["period2_end"],org_id=org_id)
         elif tool_name=="get_monthly_stats":
-            return _tool_get_monthly_stats(tool_input["year"])
+            return _tool_get_monthly_stats(tool_input["year"],org_id=org_id)
         elif tool_name=="get_gas_data":
-            return _tool_get_gas_data(tool_input["start_date"],tool_input["end_date"])
+            return _tool_get_gas_data(tool_input["start_date"],tool_input["end_date"],org_id=org_id)
         elif tool_name=="get_site_equipment":
             return _tool_get_site_equipment(tool_input.get("category"))
         elif tool_name=="get_equipment_readings":
@@ -664,10 +667,12 @@ def execute_tool(tool_name, tool_input):
     except Exception as e: return f"Tool error: {str(e)}"
 
 
-def _tool_get_gas_data(start_date, end_date):
-    data=(supabase.table("gas_data").select("timestamp,consumption")
+def _tool_get_gas_data(start_date, end_date, org_id=None):
+    q=(supabase.table("gas_data").select("timestamp,consumption")
           .gte("timestamp",start_date).lte("timestamp",end_date+"T23:59:59")
-          .range(0,20000).execute().data) or []
+          .range(0,20000))
+    if org_id: q=q.eq("org_id",org_id)
+    data=q.execute().data or []
     if not data: return f"No gas data for {start_date} to {end_date}"
     df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
     df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
@@ -830,10 +835,12 @@ def _tool_get_active_faults():
     except Exception as e:
         return f"Error checking faults: {e}"
 
-def _tool_get_hourly_data(start_date,end_date,hour=None):
-    data=(supabase.table("energy_data").select("timestamp,consumption")
+def _tool_get_hourly_data(start_date,end_date,hour=None,org_id=None):
+    q=(supabase.table("energy_data").select("timestamp,consumption")
           .gte("timestamp",start_date).lte("timestamp",end_date+"T23:59:59")
-          .order("timestamp").range(0,500).execute().data) or []
+          .order("timestamp").range(0,500))
+    if org_id: q=q.eq("org_id",org_id)
+    data=q.execute().data or []
     if not data: return f"No data found for {start_date} to {end_date}"
     df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
     df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
@@ -851,10 +858,12 @@ def _tool_get_hourly_data(start_date,end_date,hour=None):
             result.append(f"  {row['timestamp'].strftime('%Y-%m-%d %H:%M')}: {round(row['consumption'],2)} kWh")
     return "\n".join(result)
 
-def _tool_get_daily_summary(start_date,end_date):
-    data=(supabase.table("energy_data").select("timestamp,consumption")
+def _tool_get_daily_summary(start_date,end_date,org_id=None):
+    q=(supabase.table("energy_data").select("timestamp,consumption")
           .gte("timestamp",start_date).lte("timestamp",end_date+"T23:59:59")
-          .range(0,20000).execute().data) or []
+          .range(0,20000))
+    if org_id: q=q.eq("org_id",org_id)
+    data=q.execute().data or []
     if not data: return f"No data for {start_date} to {end_date}"
     df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
     df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
@@ -871,10 +880,12 @@ def _tool_get_daily_summary(start_date,end_date):
         result.append(f"  {row['date']}: {row['consumption']} kWh (£{row['cost']})")
     return "\n".join(result)
 
-def _tool_get_anomalies(start_date,end_date,severity=None):
-    data=(supabase.table("energy_data").select("timestamp,consumption")
+def _tool_get_anomalies(start_date,end_date,severity=None,org_id=None):
+    q=(supabase.table("energy_data").select("timestamp,consumption")
           .gte("timestamp",start_date).lte("timestamp",end_date+"T23:59:59")
-          .range(0,20000).execute().data) or []
+          .range(0,20000))
+    if org_id: q=q.eq("org_id",org_id)
+    data=q.execute().data or []
     if not data: return f"No data for {start_date} to {end_date}"
     df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
     df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
@@ -909,10 +920,12 @@ def _tool_get_anomalies(start_date,end_date,severity=None):
     if len(anomalies)>20: result.append(f"  ... and {len(anomalies)-20} more")
     return "\n".join(result)
 
-def _tool_get_peak_hours(start_date,end_date,top_n=5):
-    data=(supabase.table("energy_data").select("timestamp,consumption")
+def _tool_get_peak_hours(start_date,end_date,top_n=5,org_id=None):
+    q=(supabase.table("energy_data").select("timestamp,consumption")
           .gte("timestamp",start_date).lte("timestamp",end_date+"T23:59:59")
-          .range(0,20000).execute().data) or []
+          .range(0,20000))
+    if org_id: q=q.eq("org_id",org_id)
+    data=q.execute().data or []
     if not data: return f"No data for {start_date} to {end_date}"
     df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
     df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
@@ -925,10 +938,12 @@ def _tool_get_peak_hours(start_date,end_date,top_n=5):
         result.append(f"  {row['timestamp'].strftime('%Y-%m-%d %H:%M')}: {round(row['consumption'],2)} kWh")
     return "\n".join(result)
 
-def _tool_compare_periods(p1_start,p1_end,p2_start,p2_end):
+def _tool_compare_periods(p1_start,p1_end,p2_start,p2_end,org_id=None):
     def get_stats(start,end):
-        data=(supabase.table("energy_data").select("timestamp,consumption")
-              .gte("timestamp",start).lte("timestamp",end+"T23:59:59").range(0,20000).execute().data) or []
+        q=(supabase.table("energy_data").select("timestamp,consumption")
+              .gte("timestamp",start).lte("timestamp",end+"T23:59:59").range(0,20000))
+        if org_id: q=q.eq("org_id",org_id)
+        data=q.execute().data or []
         if not data: return None
         df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
         df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
@@ -945,10 +960,12 @@ def _tool_compare_periods(p1_start,p1_end,p2_start,p2_end):
         f"Period 2 ({p2_start} to {p2_end}, {p2['days']} days): {p2['total']} kWh (£{p2['cost']}) | avg {p2['daily_avg']} kWh/day",
         f"Change: {change_pct:+.1f}% | Cost diff: £{abs(round(p2['cost']-p1['cost'],2))} {'more' if p2['cost']>p1['cost'] else 'less'}"])
 
-def _tool_get_monthly_stats(year):
-    data=(supabase.table("energy_data").select("timestamp,consumption")
+def _tool_get_monthly_stats(year,org_id=None):
+    q=(supabase.table("energy_data").select("timestamp,consumption")
           .gte("timestamp",f"{year}-01-01").lte("timestamp",f"{year}-12-31T23:59:59")
-          .range(0,20000).execute().data) or []
+          .range(0,20000))
+    if org_id: q=q.eq("org_id",org_id)
+    data=q.execute().data or []
     if not data: return f"No data for {year}"
     df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
     df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
@@ -1083,7 +1100,7 @@ async def run_analyst_chat(messages, system_prompt, org_id, conversation_id, ori
             tool_results=[]
             for tb in tool_blocks:
                 print(f"[analyst] Tool: {tb['name']} — {tb['input']}")
-                tool_result=execute_tool(tb["name"],tb["input"])
+                tool_result=execute_tool(tb["name"],tb["input"],org_id=org_id)
                 tool_results.append({"type":"tool_result","tool_use_id":tb["id"],"content":tool_result})
             messages.append({"role":"user","content":tool_results}); continue
         break
@@ -1556,13 +1573,23 @@ async def get_weather_normalised(site_id: str=Query(...),org_id: Optional[str]=Q
 @app.get("/anomalies")
 def get_anomalies(days: int=Query(default=90,ge=7,le=365),
                   severity: Optional[str]=Query(default=None),
-                  anomaly_type: Optional[str]=Query(default=None)):
+                  anomaly_type: Optional[str]=Query(default=None),
+                  org_id: Optional[str]=Query(default=None),
+                  authorization: Optional[str]=Header(default=None)):
     try:
+        resolved_org_id = org_id
+        if not resolved_org_id and authorization:
+            try:
+                _, org = require_auth(authorization)
+                if org: resolved_org_id = org.get("id")
+            except: pass
         end_dt=datetime.utcnow(); start_dt=end_dt-timedelta(days=days)
-        data=(supabase.table("energy_data").select("timestamp,consumption")
+        q=(supabase.table("energy_data").select("timestamp,consumption")
               .gte("timestamp",start_dt.strftime("%Y-%m-%dT%H:%M:%S"))
               .lte("timestamp",end_dt.strftime("%Y-%m-%dT%H:%M:%S"))
-              .range(0,20000).execute().data)
+              .range(0,20000))
+        if resolved_org_id: q=q.eq("org_id",resolved_org_id)
+        data=q.execute().data
         if not data:
             return {"anomalies":[],"summary":{"total":0,"high":0,"medium":0,"low":0,"spikes":0,"drops":0},
                     "chartData":[],"avgDaily":0,"heatmap":[[0]*24 for _ in range(7)],"totalScanned":0}
@@ -1683,10 +1710,11 @@ def check_generation_allowed(org_id: str, period_type: str):
         print(f"[ai] check_generation_allowed error: {e}")
         return True, "ok", None  # Allow on error
 
-def build_energy_summary_for_period(start_date=None, end_date=None):
+def build_energy_summary_for_period(start_date=None, end_date=None, org_id=None):
     """Build energy summary filtered to a date range."""
     elec_query = supabase.table("energy_data").select("timestamp,consumption").range(0, 20000)
     gas_query = supabase.table("gas_data").select("timestamp,consumption").range(0, 20000)
+    if org_id: elec_query=elec_query.eq("org_id",org_id); gas_query=gas_query.eq("org_id",org_id)
     if start_date:
         elec_query = elec_query.gte("timestamp", start_date)
         gas_query = gas_query.gte("timestamp", start_date)
@@ -1751,7 +1779,7 @@ def build_energy_summary_for_period(start_date=None, end_date=None):
     }
     return summary
 
-async def run_agentic_analysis(system_prompt: str, user_prompt: str, max_iterations: int = 10) -> str:
+async def run_agentic_analysis(system_prompt: str, user_prompt: str, max_iterations: int = 10, org_id: str = None) -> str:
     """Agentic loop with full tool access — electricity, gas, BMS equipment."""
     messages = [{"role": "user", "content": user_prompt}]
     final_response = ""
@@ -1773,7 +1801,7 @@ async def run_agentic_analysis(system_prompt: str, user_prompt: str, max_iterati
             tool_results = []
             for tb in tool_blocks:
                 print(f"[agentic] Tool: {tb['name']} — {tb['input']}")
-                tool_results.append({"type": "tool_result", "tool_use_id": tb["id"], "content": execute_tool(tb["name"], tb["input"])})
+                tool_results.append({"type": "tool_result", "tool_use_id": tb["id"], "content": execute_tool(tb["name"], tb["input"], org_id=org_id)})
             messages.append({"role": "user", "content": tool_results})
         else:
             break
@@ -1829,7 +1857,7 @@ Generate 6-10 insights and 6-8 recommendations. Cover all data sources. Flag act
 
         user_prompt = f"Generate comprehensive energy analysis for: {period_label} ({date_range_str}). Check faults first, then gather all electricity, gas, and BMS equipment data before producing your JSON report."
 
-        raw = await run_agentic_analysis(system_prompt, user_prompt, max_iterations=12)
+        raw = await run_agentic_analysis(system_prompt, user_prompt, max_iterations=12, org_id=org_id)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -1866,15 +1894,21 @@ def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
     require_feature_jwt(authorization, org_id, "ai_insights")
     try:
         # Check electricity data
-        elec = supabase.table("energy_data").select("timestamp").order("timestamp", desc=False).limit(1).execute().data
-        elec_latest = supabase.table("energy_data").select("timestamp").order("timestamp", desc=True).limit(1).execute().data
+        elec_q = supabase.table("energy_data").select("timestamp").order("timestamp", desc=False).limit(1)
+        elec_latest_q = supabase.table("energy_data").select("timestamp").order("timestamp", desc=True).limit(1)
+        if org_id: elec_q=elec_q.eq("org_id",org_id); elec_latest_q=elec_latest_q.eq("org_id",org_id)
+        elec = elec_q.execute().data
+        elec_latest = elec_latest_q.execute().data
         elec_available = len(elec) > 0
         elec_from = elec[0]["timestamp"][:10] if elec else None
         elec_to = elec_latest[0]["timestamp"][:10] if elec_latest else None
 
         # Check gas data
-        gas = supabase.table("gas_data").select("timestamp").order("timestamp", desc=False).limit(1).execute().data
-        gas_latest = supabase.table("gas_data").select("timestamp").order("timestamp", desc=True).limit(1).execute().data
+        gas_q = supabase.table("gas_data").select("timestamp").order("timestamp", desc=False).limit(1)
+        gas_latest_q = supabase.table("gas_data").select("timestamp").order("timestamp", desc=True).limit(1)
+        if org_id: gas_q=gas_q.eq("org_id",org_id); gas_latest_q=gas_latest_q.eq("org_id",org_id)
+        gas = gas_q.execute().data
+        gas_latest = gas_latest_q.execute().data
         gas_available = len(gas) > 0
         gas_from = gas[0]["timestamp"][:10] if gas else None
         gas_to = gas_latest[0]["timestamp"][:10] if gas_latest else None
@@ -2031,7 +2065,7 @@ Base everything on actual data from your tool calls. Return ONLY JSON."""
 
         user_prompt = f"Generate a fresh prioritised action list for today ({today}). Check faults first, then review last 30 days of electricity, gas, and BMS equipment data."
 
-        raw = await run_agentic_analysis(system_prompt, user_prompt, max_iterations=10)
+        raw = await run_agentic_analysis(system_prompt, user_prompt, max_iterations=10, org_id=org_id)
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -2102,7 +2136,7 @@ async def ai_analyst_chat(req: ChatRequest,
                            authorization: Optional[str]=Header(default=None)):
     require_feature_jwt(authorization, req.org_id, "ai_energy_analyst")
     try:
-        stats=build_energy_summary_for_ai()
+        stats=build_energy_summary_for_ai(org_id=req.org_id)
         elec=stats.get("electricity",{}); gas=stats.get("gas",{})
         today=datetime.utcnow().strftime("%Y-%m-%d")
 
@@ -2148,11 +2182,12 @@ def get_conversation(conversation_id: str):
 
 # ─── REPORTS ──────────────────────────────────────────────────
 
-def build_report_data(date_from,date_to,report_type):
-    elec_data=(supabase.table("energy_data").select("timestamp,consumption").gte("timestamp",date_from)
-               .lte("timestamp",date_to+"T23:59:59").range(0,20000).execute().data) or []
-    gas_data=(supabase.table("gas_data").select("timestamp,consumption").gte("timestamp",date_from)
-              .lte("timestamp",date_to+"T23:59:59").range(0,20000).execute().data) or []
+def build_report_data(date_from,date_to,report_type,org_id=None):
+    elec_q=supabase.table("energy_data").select("timestamp,consumption").gte("timestamp",date_from).lte("timestamp",date_to+"T23:59:59").range(0,20000)
+    gas_q=supabase.table("gas_data").select("timestamp,consumption").gte("timestamp",date_from).lte("timestamp",date_to+"T23:59:59").range(0,20000)
+    if org_id: elec_q=elec_q.eq("org_id",org_id); gas_q=gas_q.eq("org_id",org_id)
+    elec_data=elec_q.execute().data or []
+    gas_data=gas_q.execute().data or []
     report={"report_type":report_type,"date_from":date_from,"date_to":date_to,"generated_at":datetime.utcnow().isoformat()}
     if elec_data:
         df=pd.DataFrame(elec_data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
@@ -2195,7 +2230,7 @@ def generate_report(req: ReportRequest, authorization: Optional[str]=Header(defa
     feature_map={"basic":"report_basic","ai_insights":"report_ai_insights","full":"report_full","premium_full":"report_premium_full"}
     require_feature_jwt(authorization,req.org_id,feature_map.get(req.report_type,"report_basic"))
     try:
-        data=build_report_data(req.date_from,req.date_to,req.report_type)
+        data=build_report_data(req.date_from,req.date_to,req.report_type,org_id=req.org_id)
         titles={"basic":"Basic Energy Report","ai_insights":"AI Insights Report","full":"Full Energy Report","premium_full":"Premium Full Report"}
         title=f"{titles.get(req.report_type,'Report')} — {req.date_from} to {req.date_to}"
         result=supabase.table("reports").insert({"org_id":req.org_id,"report_type":req.report_type,"title":title,
@@ -2231,14 +2266,14 @@ def preview_report(report_type: str,date_from: str=Query(...),date_to: str=Query
                    org_id: Optional[str]=Query(default=None),authorization: Optional[str]=Header(default=None)):
     feature_map={"basic":"report_basic","ai_insights":"report_ai_insights","full":"report_full","premium_full":"report_premium_full"}
     require_feature_jwt(authorization,org_id,feature_map.get(report_type,"report_basic"))
-    try: return {"success":True,"data":build_report_data(date_from,date_to,report_type)}
+    try: return {"success":True,"data":build_report_data(date_from,date_to,report_type,org_id=org_id)}
     except HTTPException: raise
     except Exception as e: return {"success":False,"message":str(e)}
 
 # ─── UPLOAD / ANALYTICS ───────────────────────────────────────
 
 @app.post("/upload-data")
-async def upload_data(file: UploadFile=File(...)):
+async def upload_data(file: UploadFile=File(...), org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
     try:
         contents=await file.read(); df=pd.read_csv(StringIO(contents.decode("utf-8")),index_col=None)
         date_col=next((c for c in df.columns if "date" in c.lower()),None)
@@ -2255,13 +2290,29 @@ async def upload_data(file: UploadFile=File(...)):
         df_agg["timestamp"]=df_agg["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S")
         df_agg["consumption"]=df_agg["consumption"].astype(float)
         records=df_agg.to_dict(orient="records")
+        resolved_org_id = org_id
+        if not resolved_org_id and authorization:
+            try:
+                _, org = require_auth(authorization)
+                if org: resolved_org_id = org.get("id")
+            except: pass
+        if resolved_org_id:
+            for r in records: r["org_id"] = resolved_org_id
         for i in range(0,len(records),500): supabase.table("energy_data").insert(records[i:i+500]).execute()
         return {"success":True,"rowsProcessed":len(records),"message":"Data stored"}
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.get("/analytics")
-def get_analytics():
-    data=supabase.table("energy_data").select("*").range(0,20000).execute().data
+def get_analytics(org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
+    resolved_org_id = org_id
+    if not resolved_org_id and authorization:
+        try:
+            _, org = require_auth(authorization)
+            if org: resolved_org_id = org.get("id")
+        except: pass
+    q=supabase.table("energy_data").select("*").range(0,20000)
+    if resolved_org_id: q=q.eq("org_id",resolved_org_id)
+    data=q.execute().data
     if not data:
         return {"stats":{"baseload":0,"peakDemand":0,"loadFactor":0,"avgDaily":0},
                 "hourlyProfile":[],"daily":[],"totalConsumption":0,"heatmap":[[0.0]*24 for _ in range(7)]}
@@ -2286,9 +2337,17 @@ def get_analytics():
             "totalConsumption":total,"heatmap":heatmap}
 
 @app.get("/analytics/hourly-profile/{year}")
-def get_hourly_profile_by_year(year: int):
+def get_hourly_profile_by_year(year: int, org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
     try:
-        data=supabase.table("energy_data").select("timestamp,consumption").gte("timestamp",f"{year}-01-01").lte("timestamp",f"{year}-12-31T23:59:59").execute().data
+        resolved_org_id = org_id
+        if not resolved_org_id and authorization:
+            try:
+                _, org = require_auth(authorization)
+                if org: resolved_org_id = org.get("id")
+            except: pass
+        q=supabase.table("energy_data").select("timestamp,consumption").gte("timestamp",f"{year}-01-01").lte("timestamp",f"{year}-12-31T23:59:59")
+        if resolved_org_id: q=q.eq("org_id",resolved_org_id)
+        data=q.execute().data
         if not data: return {"hourlyProfile":[{"hour":f"{h:02d}:00","average":0,"weekday":0,"weekend":0} for h in range(24)]}
         df=pd.DataFrame(data); df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce")
         df=df.dropna(subset=["consumption"]); df=parse_timestamps_naive(df)
@@ -2296,7 +2355,7 @@ def get_hourly_profile_by_year(year: int):
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.post("/upload-gas-data")
-async def upload_gas_data(file: UploadFile=File(...)):
+async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
     try:
         contents=await file.read(); df=pd.read_csv(StringIO(contents.decode("utf-8")),index_col=None)
         date_col=next((c for c in df.columns if "date" in c.lower()),None)
@@ -2313,13 +2372,29 @@ async def upload_gas_data(file: UploadFile=File(...)):
         df_agg["timestamp"]=df_agg["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S")
         df_agg["consumption"]=df_agg["consumption"].astype(float)
         records=df_agg.to_dict(orient="records")
+        resolved_org_id = org_id
+        if not resolved_org_id and authorization:
+            try:
+                _, org = require_auth(authorization)
+                if org: resolved_org_id = org.get("id")
+            except: pass
+        if resolved_org_id:
+            for r in records: r["org_id"] = resolved_org_id
         for i in range(0,len(records),500): supabase.table("gas_data").insert(records[i:i+500]).execute()
         return {"success":True,"rowsProcessed":len(records),"message":"Gas data stored"}
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.get("/gas-analytics")
-def get_gas_analytics():
-    data=supabase.table("gas_data").select("*").range(0,20000).execute().data
+def get_gas_analytics(org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
+    resolved_org_id = org_id
+    if not resolved_org_id and authorization:
+        try:
+            _, org = require_auth(authorization)
+            if org: resolved_org_id = org.get("id")
+        except: pass
+    q=supabase.table("gas_data").select("*").range(0,20000)
+    if resolved_org_id: q=q.eq("org_id",resolved_org_id)
+    data=q.execute().data
     if not data:
         return {"stats":{"baseload":0,"peakDemand":0,"loadFactor":0,"avgDaily":0},
                 "hourlyProfile":[],"daily":[],"totalConsumption":0}
@@ -2333,9 +2408,11 @@ def get_gas_analytics():
 # ─── DEBUG / DELETE ───────────────────────────────────────────
 
 @app.get("/debug/data-summary")
-def debug_data_summary():
+def debug_data_summary(org_id: Optional[str]=Query(default=None)):
     try:
-        data=supabase.table("energy_data").select("*").range(0,20000).execute().data
+        q=supabase.table("energy_data").select("*").range(0,20000)
+        if org_id: q=q.eq("org_id",org_id)
+        data=q.execute().data
         if not data: return {"rowCount":0}
         df=pd.DataFrame(data); df=parse_timestamps_naive(df)
         df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce"); df=df.dropna(subset=["consumption"])
@@ -2350,9 +2427,11 @@ def debug_data_summary():
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.get("/debug/gas-summary")
-def debug_gas_summary():
+def debug_gas_summary(org_id: Optional[str]=Query(default=None)):
     try:
-        data=supabase.table("gas_data").select("*").range(0,20000).execute().data
+        q=supabase.table("gas_data").select("*").range(0,20000)
+        if org_id: q=q.eq("org_id",org_id)
+        data=q.execute().data
         if not data: return {"rowCount":0}
         df=pd.DataFrame(data); df=parse_timestamps_naive(df)
         df["consumption"]=pd.to_numeric(df["consumption"],errors="coerce"); df=df.dropna(subset=["consumption"])
