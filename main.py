@@ -2068,6 +2068,45 @@ def get_anomalies(
         return {"success": False, "message": str(e)}
 
 
+# Stub — kept for frontend compatibility, baselines now built on-the-fly during detection
+@app.post("/baselines/recalculate")
+async def recalculate_all_baselines(
+    background_tasks: BackgroundTasks,
+    org_id: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None)
+):
+    resolved_org_id = org_id
+    if not resolved_org_id and authorization:
+        try:
+            _, org = require_auth(authorization)
+            if org: resolved_org_id = org.get("id")
+        except: pass
+    # Just trigger a full detection run — baselines are now built inside detection
+    if resolved_org_id:
+        background_tasks.add_task(run_full_anomaly_detection, org_id=resolved_org_id)
+    return {"success": True, "message": "Running detection with fresh baselines"}
+
+@app.get("/baselines")
+def get_baselines_endpoint(org_id: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
+    return {"baselines": [], "count": 0, "message": "Baselines are now computed on-the-fly during detection"}
+
+# Stub — kept for frontend compatibility
+@app.get("/anomalies/trends/summary")
+def get_trend_anomalies(org_id: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
+    resolved_org_id = org_id
+    if not resolved_org_id and authorization:
+        try:
+            _, org = require_auth(authorization)
+            if org: resolved_org_id = org.get("id")
+        except: pass
+    try:
+        q = (supabase.table("anomalies").select("*")
+             .order("detected_at", desc=True).limit(50))
+        if resolved_org_id: q = q.eq("org_id", resolved_org_id)
+        return {"trends": q.execute().data or []}
+    except Exception as e: return {"trends": []}
+
+
 @app.get("/anomalies/{anomaly_id}")
 def get_anomaly_detail(anomaly_id: str):
     try:
