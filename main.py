@@ -1575,361 +1575,272 @@ SENDGRID_API_KEY = os.environ.get("SENDGRID_API_KEY", "")
 ALERT_FROM_EMAIL = os.environ.get("ALERT_FROM_EMAIL", "alerts@effictraenergy.co.uk")
 
 # ─────────────────────────────────────────────────────────────
-#  NEW ANOMALY DETECTION — reads analytics data directly
-#  No baselines tables. No complex layers. Just:
-#  1. Load last 90 days electricity + gas from DB
-#  2. Build per-(dow, hour) median baseline on-the-fly
-#  3. Flag readings that deviate significantly
-#  4. For each anomaly, check BMS equipment readings ±2h
-#  5. Save to anomalies table, return results
+#  AI-POWERED ANOMALY DETECTION
+#  Claude analyses raw energy + BMS data and finds anomalies.
+#  No baselines, no thresholds, no statistics.
+#  Just: feed data → Claude finds issues → save to DB
 # ─────────────────────────────────────────────────────────────
 
-def _build_baselines_from_df(df: pd.DataFrame) -> dict:
-    """Build {(dow, hour): (median, std)} from a dataframe."""
-    baselines = {}
-    for (dow, hour), group in df.groupby(["dow", "hour"]):
-        vals = group["consumption"].values
-        if len(vals) >= 3:
-            baselines[(int(dow), int(hour))] = (
-                float(np.median(vals)),
-                float(np.std(vals)) if len(vals) > 1 else 0.0
-            )
-    return baselines
+def _fetch_detection_data(org_id: str) -> dict:
+    """Fetch all energy and BMS data for anomaly detection."""
+    result = {}
 
-
-def _detect_energy_anomalies(org_id: str, energy_type: str) -> list:
-    """
-    Detect anomalies across ALL available data for this org.
-    No date cutoff — scans whatever data exists in the DB.
-    """
-    table = "energy_data" if energy_type == "electricity" else "gas_data"
-
-    data = (supabase.table(table)
+    # Electricity
+    elec = (supabase.table("energy_data")
             .select("timestamp,consumption")
             .eq("org_id", org_id)
-            .range(0, 50000)
-            .execute().data) or []
+            .order("timestamp", desc=False)
+            .range(0, 50000).execute().data) or []
+    result["electricity"] = elec
 
-    if not data:
-        print(f"[anomaly] No {energy_type} data for org {org_id}")
-        return []
+    # Gas
+    gas = (supabase.table("gas_data")
+           .select("timestamp,consumption")
+           .eq("org_id", org_id)
+           .order("timestamp", desc=False)
+           .range(0, 50000).execute().data) or []
+    result["gas"] = gas
 
-    df = pd.DataFrame(data)
-    df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
-    df = df.dropna(subset=["consumption"])
-    df = parse_timestamps_naive(df)
-    df = df.sort_values("timestamp").reset_index(drop=True)
-    df["dow"] = df["timestamp"].dt.dayofweek
-    df["hour"] = df["timestamp"].dt.hour
-    df["date"] = df["timestamp"].dt.date.astype(str)
-    df["is_weekend"] = df["dow"] >= 5
-    df["is_off_hours"] = (df["hour"] < 6) | (df["hour"] >= 22)
+    # BMS equipment + latest readings
+    equipment = (supabase.table("equipment")
+                 .select("id,name,category")
+                 .eq("is_active", True)
+                 .execute().data) or []
 
-    baselines = _build_baselines_from_df(df)
-    if not baselines:
-        print(f"[anomaly] Could not build baselines for {energy_type}")
-        return []
+    bms_summary = []
+    for eq in equipment:
+        params = (supabase.table("equipment_parameters")
+                  .select("id,parameter_name,parameter_type,unit")
+                  .eq("equipment_id", eq["id"])
+                  .execute().data) or []
+        eq_data = {"name": eq["name"], "category": eq["category"], "parameters": []}
+        for p in params:
+            readings = (supabase.table("equipment_readings")
+                        .select("recorded_at,value,value_text")
+                        .eq("parameter_id", p["id"])
+                        .order("recorded_at", desc=True)
+                        .limit(200).execute().data) or []
+            if readings:
+                eq_data["parameters"].append({
+                    "name": p["parameter_name"],
+                    "type": p["parameter_type"],
+                    "unit": p.get("unit",""),
+                    "readings": readings
+                })
+        if eq_data["parameters"]:
+            bms_summary.append(eq_data)
 
-    anomalies = []
-    for _, row in df.iterrows():
-        key = (int(row["dow"]), int(row["hour"]))
-        if key not in baselines:
-            continue
-
-        baseline_kwh, std_dev = baselines[key]
-        if baseline_kwh <= 0:
-            continue
-
-        actual = float(row["consumption"])
-        dev_pct = ((actual - baseline_kwh) / baseline_kwh) * 100
-        std_devs = (actual - baseline_kwh) / std_dev if std_dev > 0.01 else 0.0
-        abs_std = abs(std_devs)
-        abs_pct = abs(dev_pct)
-
-        # Anomaly thresholds — tuned to catch real issues without noise
-        is_anomaly = (
-            (abs_std >= 2.5 and abs_pct >= 25) or   # Strong statistical signal
-            (abs_pct >= 80)                           # Very large % swing regardless of std
-        )
-        if not is_anomaly:
-            continue
-
-        # Type
-        if actual > baseline_kwh:
-            a_type = "off_hours_spike" if row["is_off_hours"] else \
-                     "weekend_spike"   if row["is_weekend"]   else "spike"
-        else:
-            a_type = "drop"
-
-        # Severity
-        sev = ("high"   if (abs_std >= 3.5 or abs_pct >= 100) else
-               "medium" if (abs_std >= 2.5 or abs_pct >= 50)  else "low")
-
-        ts_str = row["timestamp"].strftime("%Y-%m-%dT%H:%M:%S")
-        day_label = row["timestamp"].strftime("%a %d %b %Y")
-        hour_label = row["timestamp"].strftime("%H:%M")
-
-        anomalies.append({
-            "org_id":          org_id,
-            "anomaly_type":    a_type,
-            "energy_type":     energy_type,
-            "severity":        sev,
-            "timestamp_start": ts_str,
-            "timestamp_end":   ts_str,
-            "actual_value":    round(actual, 3),
-            "expected_value":  round(baseline_kwh, 3),
-            "deviation_pct":   round(dev_pct, 1),
-            "std_deviations":  round(std_devs, 2),
-            "description": (
-                f"{energy_type.capitalize()} {a_type.replace('_',' ')}: "
-                f"{round(actual,2)} kWh vs expected {round(baseline_kwh,2)} kWh "
-                f"({dev_pct:+.1f}%) on {day_label} at {hour_label}"
-            ),
-            "bms_correlation": [],
-            "trend_data":      {},
-            "detected_at":     datetime.utcnow().isoformat(),
-        })
-
-    print(f"[anomaly] {energy_type}: {len(anomalies)} anomalies from {len(df)} rows")
-    return anomalies
+    result["bms"] = bms_summary
+    return result
 
 
-def _detect_bms_anomalies(org_id: str) -> list:
-    """
-    Detect anomalies directly from BMS equipment readings:
-    - Fault alarms active
-    - Flow temps out of normal range
-    - Equipment running continuously off-hours
-    - VFD speed pegged at 100%
-    Returns list of anomaly dicts.
-    """
-    anomalies = []
-    now = datetime.utcnow()
+def _summarise_for_claude(data: dict) -> str:
+    """Convert raw data into a compact text summary for Claude to analyse."""
+    lines = []
 
-    try:
-        equipment_rows = (supabase.table("equipment")
-                          .select("id,name,category,site_id")
-                          .eq("is_active", True)
-                          .execute().data) or []
+    # Electricity summary
+    elec = data.get("electricity", [])
+    if elec:
+        try:
+            df = pd.DataFrame(elec)
+            df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+            df = df.dropna(subset=["consumption"])
+            df = parse_timestamps_naive(df)
+            df["date"] = df["timestamp"].dt.date.astype(str)
+            df["hour"] = df["timestamp"].dt.hour
+            df["dow"] = df["timestamp"].dt.dayofweek
 
-        for eq in equipment_rows:
-            params = (supabase.table("equipment_parameters")
-                      .select("id,parameter_name,parameter_type,unit")
-                      .eq("equipment_id", eq["id"])
-                      .execute().data) or []
+            daily = df.groupby("date")["consumption"].sum()
+            hourly_avg = df.groupby("hour")["consumption"].mean()
+            overnight = df[df["hour"].isin([0,1,2,3,4,5])]["consumption"].mean()
+            daytime = df[df["hour"].isin(range(8,18))]["consumption"].mean()
 
-            for param in params:
-                ptype = param["parameter_type"]
-                readings = (supabase.table("equipment_readings")
-                            .select("recorded_at,value,value_text")
-                            .eq("parameter_id", param["id"])
-                            .order("recorded_at", desc=True)
-                            .limit(500)
-                            .execute().data) or []
+            lines.append("=== ELECTRICITY DATA ===")
+            lines.append(f"Date range: {daily.index.min()} to {daily.index.max()}")
+            lines.append(f"Total days: {len(daily)}, Total readings: {len(df)}")
+            lines.append(f"Overall avg daily: {daily.mean():.1f} kWh, Max day: {daily.max():.1f} kWh ({daily.idxmax()}), Min day: {daily.min():.1f} kWh ({daily.idxmin()})")
+            lines.append(f"Overnight avg (00-05h): {overnight:.2f} kWh/h, Daytime avg (08-18h): {daytime:.2f} kWh/h")
+            lines.append(f"Overnight/daytime ratio: {overnight/daytime:.2f} (healthy buildings typically <0.3)")
 
-                if not readings:
-                    continue
+            # Top 10 highest days
+            top_days = daily.nlargest(10)
+            lines.append(f"Top 10 highest consumption days:")
+            for d, v in top_days.items():
+                dow = pd.Timestamp(d).strftime("%a")
+                lines.append(f"  {d} ({dow}): {v:.1f} kWh")
 
-                eq_label = f"{eq['category'].title()} — {eq['name']}"
+            # Monthly breakdown
+            df["month"] = df["timestamp"].dt.to_period("M").astype(str)
+            monthly = df.groupby("month")["consumption"].sum()
+            lines.append("Monthly totals:")
+            for m, v in monthly.items():
+                lines.append(f"  {m}: {v:.0f} kWh")
 
-                # ── Fault alarm ──────────────────────────────
+            # Weekend vs weekday
+            weekday_avg = df[df["dow"] < 5].groupby("date")["consumption"].sum().mean()
+            weekend_avg = df[df["dow"] >= 5].groupby("date")["consumption"].sum().mean()
+            lines.append(f"Weekday avg: {weekday_avg:.1f} kWh/day, Weekend avg: {weekend_avg:.1f} kWh/day")
+            lines.append(f"Weekend/weekday ratio: {weekend_avg/weekday_avg:.2f} (should be <0.7 for offices)")
+        except Exception as e:
+            lines.append(f"Electricity parse error: {e}")
+
+    # Gas summary
+    gas = data.get("gas", [])
+    if gas:
+        try:
+            df = pd.DataFrame(gas)
+            df["consumption"] = pd.to_numeric(df["consumption"], errors="coerce")
+            df = df.dropna(subset=["consumption"])
+            df = parse_timestamps_naive(df)
+            df["date"] = df["timestamp"].dt.date.astype(str)
+            daily = df.groupby("date")["consumption"].sum()
+            lines.append("\n=== GAS DATA ===")
+            lines.append(f"Date range: {daily.index.min()} to {daily.index.max()}")
+            lines.append(f"Avg daily: {daily.mean():.1f} kWh, Max: {daily.max():.1f} kWh ({daily.idxmax()}), Min: {daily.min():.1f} kWh ({daily.idxmin()})")
+            top_gas = daily.nlargest(5)
+            lines.append("Top 5 highest gas days:")
+            for d, v in top_gas.items():
+                lines.append(f"  {d}: {v:.1f} kWh")
+            df["month"] = df["timestamp"].dt.to_period("M").astype(str)
+            monthly = df.groupby("month")["consumption"].sum()
+            lines.append("Monthly gas totals:")
+            for m, v in monthly.items():
+                lines.append(f"  {m}: {v:.0f} kWh")
+        except Exception as e:
+            lines.append(f"Gas parse error: {e}")
+
+    # BMS summary
+    bms = data.get("bms", [])
+    if bms:
+        lines.append("\n=== BMS EQUIPMENT DATA ===")
+        for eq in bms:
+            lines.append(f"\nEquipment: {eq['name']} ({eq['category']})")
+            for p in eq["parameters"]:
+                readings = p["readings"]
+                ptype = p["type"]
+                unit = p.get("unit","")
                 if ptype == "fault_alarm":
-                    fault_events = [r for r in readings if
-                        str(r.get("value","")).strip() in ("1","1.0") or
-                        str(r.get("value_text","")).lower() in ("fault","alarm","true","active")]
-                    for fe in fault_events:
-                        anomalies.append({
-                            "org_id":          org_id,
-                            "anomaly_type":    "bms_fault_alarm",
-                            "energy_type":     "bms",
-                            "severity":        "high",
-                            "timestamp_start": fe["recorded_at"],
-                            "timestamp_end":   fe["recorded_at"],
-                            "actual_value":    1.0,
-                            "expected_value":  0.0,
-                            "deviation_pct":   100.0,
-                            "std_deviations":  0.0,
-                            "description":     f"FAULT ALARM: {eq_label} — {param['parameter_name']} triggered",
-                            "bms_correlation": [{"equipment": eq["name"], "parameter": param["parameter_name"], "type": "fault_alarm"}],
-                            "trend_data":      {},
-                            "detected_at":     now.isoformat(),
-                        })
-
-                # ── Flow temp high ───────────────────────────
-                elif ptype == "flow_temp":
+                    faults = [r for r in readings if str(r.get("value","")).strip() in ("1","1.0") or str(r.get("value_text","")).lower() in ("fault","alarm","true","active")]
+                    lines.append(f"  {p['name']} (fault_alarm): {len(faults)} fault events out of {len(readings)} readings")
+                    if faults:
+                        lines.append(f"    Last fault: {faults[0]['recorded_at']}")
+                elif ptype in ("flow_temp","return_temp","setpoint_temp","sensor"):
                     vals = [float(r["value"]) for r in readings if r.get("value") is not None]
-                    high = [v for v in vals if v > 85]
-                    if high:
-                        anomalies.append({
-                            "org_id":          org_id,
-                            "anomaly_type":    "bms_temp_high",
-                            "energy_type":     "bms",
-                            "severity":        "medium",
-                            "timestamp_start": readings[0]["recorded_at"],
-                            "timestamp_end":   readings[0]["recorded_at"],
-                            "actual_value":    round(max(high), 1),
-                            "expected_value":  85.0,
-                            "deviation_pct":   round((max(high)-85)/85*100, 1),
-                            "std_deviations":  0.0,
-                            "description":     f"HIGH FLOW TEMP: {eq_label} — {param['parameter_name']} peaked at {max(high):.1f}°C (threshold 85°C)",
-                            "bms_correlation": [{"equipment": eq["name"], "parameter": param["parameter_name"], "type": "temp_high"}],
-                            "trend_data":      {},
-                            "detected_at":     now.isoformat(),
-                        })
-
-                # ── Heating valve stuck open ─────────────────
-                elif ptype == "Htg_Vlv_pos":
-                    vals = [float(r["value"]) for r in readings if r.get("value") is not None]
-                    stuck = [v for v in vals if v > 90]
-                    if len(stuck) > 5:
-                        anomalies.append({
-                            "org_id":          org_id,
-                            "anomaly_type":    "bms_valve_stuck",
-                            "energy_type":     "bms",
-                            "severity":        "medium",
-                            "timestamp_start": readings[0]["recorded_at"],
-                            "timestamp_end":   readings[0]["recorded_at"],
-                            "actual_value":    round(max(stuck), 1),
-                            "expected_value":  50.0,
-                            "deviation_pct":   round((max(stuck)-50)/50*100, 1),
-                            "std_deviations":  0.0,
-                            "description":     f"VALVE STUCK OPEN: {eq_label} — {param['parameter_name']} >90% for {len(stuck)} readings",
-                            "bms_correlation": [{"equipment": eq["name"], "parameter": param["parameter_name"], "type": "valve_stuck"}],
-                            "trend_data":      {},
-                            "detected_at":     now.isoformat(),
-                        })
-
-                # ── VFD speed pegged ─────────────────────────
+                    if vals:
+                        lines.append(f"  {p['name']} ({ptype}): min={min(vals):.1f}{unit} avg={sum(vals)/len(vals):.1f}{unit} max={max(vals):.1f}{unit} ({len(vals)} readings)")
+                elif ptype == "on_off":
+                    on = sum(1 for r in readings if str(r.get("value","")).strip() in ("1","1.0") or str(r.get("value_text","")).lower() in ("on","true"))
+                    lines.append(f"  {p['name']} (on_off): ON {on}/{len(readings)} readings ({100*on//len(readings) if readings else 0}% of time)")
                 elif ptype == "Run_Speed":
                     vals = [float(r["value"]) for r in readings if r.get("value") is not None]
-                    pegged = [v for v in vals if v >= 99]
-                    if len(pegged) > 10:
-                        anomalies.append({
-                            "org_id":          org_id,
-                            "anomaly_type":    "bms_vfd_pegged",
-                            "energy_type":     "bms",
-                            "severity":        "low",
-                            "timestamp_start": readings[0]["recorded_at"],
-                            "timestamp_end":   readings[0]["recorded_at"],
-                            "actual_value":    round(max(pegged), 1),
-                            "expected_value":  75.0,
-                            "deviation_pct":   round((max(pegged)-75)/75*100, 1),
-                            "std_deviations":  0.0,
-                            "description":     f"VFD AT MAX SPEED: {eq_label} — {param['parameter_name']} running at 100% for {len(pegged)} readings. Check for oversized equipment or blocked filters.",
-                            "bms_correlation": [{"equipment": eq["name"], "parameter": param["parameter_name"], "type": "vfd_pegged"}],
-                            "trend_data":      {},
-                            "detected_at":     now.isoformat(),
-                        })
-
-    except Exception as e:
-        print(f"[bms_anomaly] Error: {e}")
-        import traceback; traceback.print_exc()
-
-    print(f"[anomaly] BMS: {len(anomalies)} anomalies found")
-    return anomalies
-
-
-def _enrich_with_bms_correlation(anomaly: dict) -> dict:
-    """For energy anomalies, check BMS readings ±2h and attach correlations."""
-    try:
-        ts_str = anomaly.get("timestamp_start", "")
-        if not ts_str or anomaly["energy_type"] == "bms":
-            return anomaly
-
-        ts = datetime.fromisoformat(ts_str.replace("Z",""))
-        window_start = (ts - timedelta(hours=2)).isoformat()
-        window_end   = (ts + timedelta(hours=2)).isoformat()
-        correlations = []
-
-        equipment_rows = (supabase.table("equipment")
-                          .select("id,name,category")
-                          .eq("is_active", True)
-                          .execute().data) or []
-
-        for eq in equipment_rows:
-            params = (supabase.table("equipment_parameters")
-                      .select("id,parameter_name,parameter_type,unit")
-                      .eq("equipment_id", eq["id"])
-                      .execute().data) or []
-            for param in params:
-                ptype = param["parameter_type"]
-                readings = (supabase.table("equipment_readings")
-                            .select("recorded_at,value,value_text")
-                            .eq("parameter_id", param["id"])
-                            .gte("recorded_at", window_start)
-                            .lte("recorded_at", window_end)
-                            .limit(10).execute().data) or []
-                if not readings:
-                    continue
-
-                if ptype == "fault_alarm":
-                    active = [r for r in readings if
-                              str(r.get("value","")).strip() in ("1","1.0") or
-                              str(r.get("value_text","")).lower() in ("fault","alarm","true","active")]
-                    if active:
-                        correlations.append({
-                            "equipment": eq["name"], "parameter": param["parameter_name"],
-                            "type": "fault_alarm", "value": "ACTIVE",
-                            "description": f"{eq['name']} fault alarm active at time of energy anomaly"
-                        })
-                elif ptype == "flow_temp":
+                    if vals:
+                        lines.append(f"  {p['name']} (VFD speed): min={min(vals):.0f}% avg={sum(vals)/len(vals):.0f}% max={max(vals):.0f}%")
+                elif ptype in ("Htg_Vlv_pos","Clg_Vlv_Pos"):
                     vals = [float(r["value"]) for r in readings if r.get("value") is not None]
-                    if vals and max(vals) > 85:
-                        correlations.append({
-                            "equipment": eq["name"], "parameter": param["parameter_name"],
-                            "type": "temp_high", "value": f"{max(vals):.1f}°C",
-                            "description": f"{eq['name']} flow temp {max(vals):.1f}°C at time of anomaly"
-                        })
+                    if vals:
+                        lines.append(f"  {p['name']} (valve): min={min(vals):.0f}% avg={sum(vals)/len(vals):.0f}% max={max(vals):.0f}%")
+                else:
+                    lines.append(f"  {p['name']} ({ptype}): {len(readings)} readings")
 
-        anomaly["bms_correlation"] = correlations
-    except Exception as e:
-        print(f"[enrich_bms] Error: {e}")
-    return anomaly
+    return "\n".join(lines)
 
 
 async def run_full_anomaly_detection(org_id: str):
     """
-    Run full anomaly detection:
-    1. Electricity anomalies
-    2. Gas anomalies
-    3. BMS equipment anomalies
-    4. Enrich energy anomalies with BMS correlation
-    5. Deduplicate and save to DB
+    AI-powered anomaly detection.
+    Feeds energy + BMS data to Claude, gets back structured anomaly list.
     """
-    print(f"[anomaly] Starting detection for org={org_id}")
-    now = datetime.utcnow()
+    print(f"[anomaly] Starting AI detection for org={org_id}")
 
-    # Detect
-    elec = _detect_energy_anomalies(org_id, "electricity")
-    gas  = _detect_energy_anomalies(org_id, "gas")
-    bms  = _detect_bms_anomalies(org_id)
+    # 1. Fetch data
+    data = _fetch_detection_data(org_id)
+    summary = _summarise_for_claude(data)
 
-    all_anomalies = elec + gas + bms
+    if not summary.strip() or (not data["electricity"] and not data["gas"] and not data["bms"]):
+        print(f"[anomaly] No data found for org={org_id}")
+        return {"saved": 0, "message": "No data found"}
 
-    # Enrich energy anomalies with BMS correlation
-    enriched = []
-    for a in all_anomalies:
-        if a["energy_type"] != "bms":
-            a = _enrich_with_bms_correlation(a)
-        enriched.append(a)
+    # 2. Ask Claude to find anomalies
+    prompt = f"""You are an expert building energy analyst. Analyse this energy and BMS data for a building and identify ALL anomalies, inefficiencies, and issues.
 
-    # Clear previous run for this org (fresh detection replaces old results)
+{summary}
+
+Return a JSON array of anomaly objects. Each object must have exactly these fields:
+- "anomaly_type": one of: spike, drop, off_hours_spike, weekend_high, baseload_high, gas_spike, gas_high, bms_fault, bms_temp_high, bms_valve_issue, bms_vfd_issue, pattern_anomaly
+- "energy_type": one of: electricity, gas, bms
+- "severity": one of: high, medium, low
+- "timestamp_start": ISO date string of when the anomaly occurred (use actual dates from data, e.g. "2024-03-15T03:00:00")
+- "actual_value": numeric value observed (kWh or relevant unit)
+- "expected_value": numeric value that would be normal/expected
+- "deviation_pct": percentage deviation from expected (positive = above, negative = below)
+- "description": 1-2 sentence plain English explanation of what the anomaly is and why it matters for energy efficiency
+
+Be thorough. Find at least 10-20 anomalies if the data supports it. Focus on:
+- Days/hours with unusually high consumption
+- Off-hours energy waste (nights, weekends)
+- High overnight baseload (equipment not switching off)
+- Months with unusual spikes or drops
+- Gas anomalies relative to typical patterns
+- BMS fault alarms, valve issues, temperature problems
+- Weekend consumption being too close to weekday consumption
+
+Return ONLY the JSON array, no other text."""
+
     try:
-        supabase.table("anomalies").delete().eq("org_id", org_id).execute()
-        print(f"[anomaly] Cleared previous anomalies for org={org_id}")
+        response = await call_claude(prompt, max_tokens=4000)
+
+        # Parse JSON from response
+        import re
+        json_match = re.search(r'\[.*\]', response, re.DOTALL)
+        if not json_match:
+            print(f"[anomaly] Claude returned no JSON array")
+            print(f"[anomaly] Response: {response[:500]}")
+            return {"saved": 0, "message": "AI returned no structured data"}
+
+        anomaly_list = json.loads(json_match.group())
+        print(f"[anomaly] Claude found {len(anomaly_list)} anomalies")
+
+        # 3. Clear old results and save new ones
+        try:
+            supabase.table("anomalies").delete().eq("org_id", org_id).execute()
+        except Exception as e:
+            print(f"[anomaly] Warning clearing old anomalies: {e}")
+
+        now = datetime.utcnow().isoformat()
+        to_save = []
+        for a in anomaly_list:
+            to_save.append({
+                "org_id":          org_id,
+                "anomaly_type":    a.get("anomaly_type", "spike"),
+                "energy_type":     a.get("energy_type", "electricity"),
+                "severity":        a.get("severity", "medium"),
+                "timestamp_start": a.get("timestamp_start", now),
+                "timestamp_end":   a.get("timestamp_start", now),
+                "actual_value":    float(a.get("actual_value", 0) or 0),
+                "expected_value":  float(a.get("expected_value", 0) or 0),
+                "deviation_pct":   float(a.get("deviation_pct", 0) or 0),
+                "std_deviations":  0.0,
+                "description":     str(a.get("description", "")),
+                "bms_correlation": [],
+                "trend_data":      {},
+                "detected_at":     now,
+            })
+
+        saved = 0
+        for i in range(0, len(to_save), 100):
+            result = supabase.table("anomalies").insert(to_save[i:i+100]).execute()
+            if result.data:
+                saved += len(result.data)
+
+        print(f"[anomaly] Saved {saved} anomalies")
+        return {"saved": saved, "total_found": len(anomaly_list)}
+
+    except json.JSONDecodeError as e:
+        print(f"[anomaly] JSON parse error: {e}")
+        return {"saved": 0, "message": f"JSON parse error: {e}"}
     except Exception as e:
-        print(f"[anomaly] Warning — could not clear old anomalies: {e}")
-
-    # Save new anomalies in batches
-    saved = 0
-    for i in range(0, len(enriched), 100):
-        batch = enriched[i:i+100]
-        result = supabase.table("anomalies").insert(batch).execute()
-        if result.data:
-            saved += len(result.data)
-
-    print(f"[anomaly] Done: {saved} anomalies saved (elec={len(elec)}, gas={len(gas)}, bms={len(bms)})")
-    return {"saved": saved, "electricity": len(elec), "gas": len(gas), "bms": len(bms)}
+        import traceback; traceback.print_exc()
+        return {"saved": 0, "message": str(e)}
 
 
 # ── ANOMALY ENDPOINTS ─────────────────────────────────────────
@@ -1940,7 +1851,6 @@ async def trigger_anomaly_detection(
     org_id: Optional[str] = Query(default=None),
     authorization: Optional[str] = Header(default=None)
 ):
-    """Trigger a fresh full anomaly detection run."""
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
@@ -1950,7 +1860,43 @@ async def trigger_anomaly_detection(
     if not resolved_org_id:
         raise HTTPException(status_code=400, detail="org_id required")
     background_tasks.add_task(run_full_anomaly_detection, org_id=resolved_org_id)
-    return {"success": True, "message": "Detection running — results will appear shortly"}
+    return {"success": True, "message": "AI detection running — results will appear in 30-60 seconds"}
+
+
+# Stub — kept for frontend compatibility
+@app.post("/baselines/recalculate")
+async def recalculate_all_baselines(
+    background_tasks: BackgroundTasks,
+    org_id: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None)
+):
+    resolved_org_id = org_id
+    if not resolved_org_id and authorization:
+        try:
+            _, org = require_auth(authorization)
+            if org: resolved_org_id = org.get("id")
+        except: pass
+    if resolved_org_id:
+        background_tasks.add_task(run_full_anomaly_detection, org_id=resolved_org_id)
+    return {"success": True, "message": "AI detection started"}
+
+@app.get("/baselines")
+def get_baselines_endpoint(org_id: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
+    return {"baselines": [], "count": 0}
+
+@app.get("/anomalies/trends/summary")
+def get_trend_anomalies(org_id: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
+    resolved_org_id = org_id
+    if not resolved_org_id and authorization:
+        try:
+            _, org = require_auth(authorization)
+            if org: resolved_org_id = org.get("id")
+        except: pass
+    try:
+        q = supabase.table("anomalies").select("*").order("detected_at", desc=True).limit(50)
+        if resolved_org_id: q = q.eq("org_id", resolved_org_id)
+        return {"trends": q.execute().data or []}
+    except: return {"trends": []}
 
 
 @app.get("/anomalies")
@@ -1961,7 +1907,6 @@ def get_anomalies(
     org_id: Optional[str] = Query(default=None),
     authorization: Optional[str] = Header(default=None)
 ):
-    """Return all stored anomalies for an org."""
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
@@ -1971,7 +1916,6 @@ def get_anomalies(
 
     try:
         q = (supabase.table("anomalies").select("*")
-             .order("severity", desc=False)
              .order("timestamp_start", desc=True)
              .limit(2000))
         if resolved_org_id: q = q.eq("org_id", resolved_org_id)
@@ -1982,28 +1926,26 @@ def get_anomalies(
         anomalies = q.execute().data or []
 
         summary = {
-            "total":           len(anomalies),
-            "high":            sum(1 for a in anomalies if a["severity"] == "high"),
-            "medium":          sum(1 for a in anomalies if a["severity"] == "medium"),
-            "low":             sum(1 for a in anomalies if a["severity"] == "low"),
-            "electricity":     sum(1 for a in anomalies if a["energy_type"] == "electricity"),
-            "gas":             sum(1 for a in anomalies if a["energy_type"] == "gas"),
-            "bms":             sum(1 for a in anomalies if a["energy_type"] == "bms"),
-            "bms_correlated":  sum(1 for a in anomalies if a.get("bms_correlation")),
-            "unacknowledged":  sum(1 for a in anomalies if not a.get("acknowledged")),
+            "total":          len(anomalies),
+            "high":           sum(1 for a in anomalies if a["severity"] == "high"),
+            "medium":         sum(1 for a in anomalies if a["severity"] == "medium"),
+            "low":            sum(1 for a in anomalies if a["severity"] == "low"),
+            "electricity":    sum(1 for a in anomalies if a["energy_type"] == "electricity"),
+            "gas":            sum(1 for a in anomalies if a["energy_type"] == "gas"),
+            "bms":            sum(1 for a in anomalies if a["energy_type"] == "bms"),
+            "bms_correlated": sum(1 for a in anomalies if a.get("bms_correlation")),
+            "unacknowledged": sum(1 for a in anomalies if not a.get("acknowledged")),
         }
 
-        # Consumption chart data (electricity only, last 90 days)
+        # Chart data from electricity table
         chart_data = []
         heatmap = [[0]*24 for _ in range(7)]
         avg_daily = 0
 
         if resolved_org_id:
-            cutoff = (datetime.utcnow() - timedelta(days=90)).isoformat()
             elec_data = (supabase.table("energy_data")
                          .select("timestamp,consumption")
                          .eq("org_id", resolved_org_id)
-                         .gte("timestamp", cutoff)
                          .range(0, 20000).execute().data) or []
             if elec_data:
                 edf = pd.DataFrame(elec_data)
@@ -2026,29 +1968,28 @@ def get_anomalies(
                     d, h = row["timestamp"].dayofweek, row["timestamp"].hour
                     heatmap[d][h] += 1
 
-        # Format for frontend
         formatted = []
         for a in anomalies:
             ts = a.get("timestamp_start","")
             formatted.append({
-                "id":            a["id"],
-                "timestamp":     ts,
-                "date":          ts[:10] if ts else "",
-                "hour":          int(ts[11:13]) if len(ts) > 11 else 0,
-                "hourLabel":     f"{ts[11:13]}:00" if len(ts) > 11 else "00:00",
-                "anomalyType":   a["anomaly_type"],
-                "energyType":    a["energy_type"],
-                "actual":        a.get("actual_value"),
-                "expected":      a.get("expected_value"),
-                "deviationPct":  a.get("deviation_pct"),
-                "stdDeviations": a.get("std_deviations"),
-                "severity":      a["severity"],
-                "type":          ("bms"   if a["energy_type"] == "bms" else
-                                  "spike" if "spike" in a["anomaly_type"] else
-                                  "drop"  if a["anomaly_type"] == "drop" else "other"),
-                "description":   a.get("description",""),
+                "id":             a["id"],
+                "timestamp":      ts,
+                "date":           ts[:10] if ts else "",
+                "hour":           int(ts[11:13]) if len(ts) > 11 else 0,
+                "hourLabel":      f"{ts[11:13]}:00" if len(ts) > 11 else "00:00",
+                "anomalyType":    a["anomaly_type"],
+                "energyType":     a["energy_type"],
+                "actual":         a.get("actual_value"),
+                "expected":       a.get("expected_value"),
+                "deviationPct":   a.get("deviation_pct"),
+                "stdDeviations":  a.get("std_deviations"),
+                "severity":       a["severity"],
+                "type":           ("bms"   if a["energy_type"] == "bms" else
+                                   "spike" if "spike" in a["anomaly_type"] else
+                                   "drop"  if a["anomaly_type"] == "drop" else "other"),
+                "description":    a.get("description",""),
                 "bmsCorrelation": a.get("bms_correlation",[]),
-                "acknowledged":  a.get("acknowledged", False),
+                "acknowledged":   a.get("acknowledged", False),
             })
 
         return {
@@ -2062,45 +2003,6 @@ def get_anomalies(
     except Exception as e:
         import traceback; traceback.print_exc()
         return {"success": False, "message": str(e)}
-
-
-# Stub — kept for frontend compatibility, baselines now built on-the-fly during detection
-@app.post("/baselines/recalculate")
-async def recalculate_all_baselines(
-    background_tasks: BackgroundTasks,
-    org_id: Optional[str] = Query(default=None),
-    authorization: Optional[str] = Header(default=None)
-):
-    resolved_org_id = org_id
-    if not resolved_org_id and authorization:
-        try:
-            _, org = require_auth(authorization)
-            if org: resolved_org_id = org.get("id")
-        except: pass
-    # Just trigger a full detection run — baselines are now built inside detection
-    if resolved_org_id:
-        background_tasks.add_task(run_full_anomaly_detection, org_id=resolved_org_id)
-    return {"success": True, "message": "Running detection with fresh baselines"}
-
-@app.get("/baselines")
-def get_baselines_endpoint(org_id: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
-    return {"baselines": [], "count": 0, "message": "Baselines are now computed on-the-fly during detection"}
-
-# Stub — kept for frontend compatibility
-@app.get("/anomalies/trends/summary")
-def get_trend_anomalies(org_id: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
-    resolved_org_id = org_id
-    if not resolved_org_id and authorization:
-        try:
-            _, org = require_auth(authorization)
-            if org: resolved_org_id = org.get("id")
-        except: pass
-    try:
-        q = (supabase.table("anomalies").select("*")
-             .order("detected_at", desc=True).limit(50))
-        if resolved_org_id: q = q.eq("org_id", resolved_org_id)
-        return {"trends": q.execute().data or []}
-    except Exception as e: return {"trends": []}
 
 
 @app.get("/anomalies/{anomaly_id}")
@@ -2128,10 +2030,7 @@ def acknowledge_anomaly(anomaly_id: str, authorization: Optional[str] = Header(d
 
 
 @app.get("/alert-settings")
-def get_alert_settings(
-    org_id: Optional[str] = Query(default=None),
-    authorization: Optional[str] = Header(default=None)
-):
+def get_alert_settings(org_id: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
@@ -2139,21 +2038,15 @@ def get_alert_settings(
             if org: resolved_org_id = org.get("id")
         except: pass
     try:
-        result = (supabase.table("alert_settings").select("*")
-                  .eq("org_id", resolved_org_id).single().execute())
+        result = supabase.table("alert_settings").select("*").eq("org_id", resolved_org_id).single().execute()
         if not result.data:
             return {"settings": {"email_alerts": True, "alert_email": None, "min_severity": "high"}}
         return {"settings": result.data}
-    except Exception as e:
-        return {"settings": {"email_alerts": True, "alert_email": None, "min_severity": "high"}}
+    except: return {"settings": {"email_alerts": True, "alert_email": None, "min_severity": "high"}}
 
 
 @app.put("/alert-settings")
-def update_alert_settings(
-    settings: dict,
-    org_id: Optional[str] = Query(default=None),
-    authorization: Optional[str] = Header(default=None)
-):
+def update_alert_settings(settings: dict, org_id: Optional[str] = Query(default=None), authorization: Optional[str] = Header(default=None)):
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
@@ -2162,11 +2055,11 @@ def update_alert_settings(
         except: pass
     try:
         payload = {
-            "org_id":       resolved_org_id,
+            "org_id": resolved_org_id,
             "email_alerts": settings.get("email_alerts", True),
-            "alert_email":  settings.get("alert_email"),
+            "alert_email": settings.get("alert_email"),
             "min_severity": settings.get("min_severity", "high"),
-            "updated_at":   datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
         }
         supabase.table("alert_settings").upsert(payload, on_conflict="org_id").execute()
         return {"success": True}
