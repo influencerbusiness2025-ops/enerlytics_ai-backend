@@ -1920,9 +1920,9 @@ def get_anomalies(
              .order("timestamp_start", desc=True)
              .limit(2000))
         if resolved_org_id: q = q.eq("org_id", resolved_org_id)
-        if days:
-            cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
-            q = q.gte("timestamp_start", cutoff)
+        # No date filtering on anomalies — they represent historical findings
+        # Frontend day buttons control display only, not DB query
+        # All anomalies for this org are returned and frontend filters by timestamp_start
         if severity:     q = q.eq("severity", severity.lower())
         if anomaly_type: q = q.eq("anomaly_type", anomaly_type.lower())
         if energy_type:  q = q.eq("energy_type", energy_type.lower())
