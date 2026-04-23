@@ -1901,6 +1901,7 @@ def get_trend_anomalies(org_id: Optional[str] = Query(default=None), authorizati
 
 @app.get("/anomalies")
 def get_anomalies(
+    days: Optional[int] = Query(default=None),
     severity: Optional[str] = Query(default=None),
     anomaly_type: Optional[str] = Query(default=None),
     energy_type: Optional[str] = Query(default=None),
@@ -1919,6 +1920,9 @@ def get_anomalies(
              .order("timestamp_start", desc=True)
              .limit(2000))
         if resolved_org_id: q = q.eq("org_id", resolved_org_id)
+        if days:
+            cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
+            q = q.gte("timestamp_start", cutoff)
         if severity:     q = q.eq("severity", severity.lower())
         if anomaly_type: q = q.eq("anomaly_type", anomaly_type.lower())
         if energy_type:  q = q.eq("energy_type", energy_type.lower())
