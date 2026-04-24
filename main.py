@@ -99,7 +99,7 @@ TIER_FEATURES = {
         "ai_senior_consultant": False, "weather_normalisation": True,
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": True, "settings_sites": True, "multi_site": False,
-        "api_access": False, "bms_parameters": True, "carbon_reporting": False,
+        "api_access": False, "bms_parameters": True, "carbon_reporting": True,
     },
     "basic": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
