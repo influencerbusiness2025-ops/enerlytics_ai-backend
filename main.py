@@ -2759,7 +2759,9 @@ def preview_report(report_type: str,date_from: str=Query(...),date_to: str=Query
 # ─── UPLOAD / ANALYTICS ───────────────────────────────────────
 
 @app.post("/upload-data")
-async def upload_data(file: UploadFile=File(...), org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
+async def upload_data(file: UploadFile=File(...), org_id: Optional[str]=Query(default=None),
+                      site_id: Optional[str]=Query(default=None),
+                      authorization: Optional[str]=Header(default=None)):
     try:
         contents=await file.read(); df=pd.read_csv(StringIO(contents.decode("utf-8")),index_col=None)
         date_col=next((c for c in df.columns if "date" in c.lower()),None)
@@ -2782,8 +2784,9 @@ async def upload_data(file: UploadFile=File(...), org_id: Optional[str]=Query(de
                 _, org = require_auth(authorization)
                 if org: resolved_org_id = org.get("id")
             except: pass
-        if resolved_org_id:
-            for r in records: r["org_id"] = resolved_org_id
+        for r in records:
+            if resolved_org_id: r["org_id"] = resolved_org_id
+            if site_id: r["site_id"] = site_id
         for i in range(0,len(records),500): supabase.table("energy_data").insert(records[i:i+500]).execute()
         return {"success":True,"rowsProcessed":len(records),"message":"Data stored"}
     except Exception as e: return {"success":False,"message":str(e)}
@@ -2841,7 +2844,9 @@ def get_hourly_profile_by_year(year: int, org_id: Optional[str]=Query(default=No
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.post("/upload-gas-data")
-async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
+async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Query(default=None),
+                           site_id: Optional[str]=Query(default=None),
+                           authorization: Optional[str]=Header(default=None)):
     try:
         contents=await file.read(); df=pd.read_csv(StringIO(contents.decode("utf-8")),index_col=None)
         date_col=next((c for c in df.columns if "date" in c.lower()),None)
@@ -2864,8 +2869,9 @@ async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Quer
                 _, org = require_auth(authorization)
                 if org: resolved_org_id = org.get("id")
             except: pass
-        if resolved_org_id:
-            for r in records: r["org_id"] = resolved_org_id
+        for r in records:
+            if resolved_org_id: r["org_id"] = resolved_org_id
+            if site_id: r["site_id"] = site_id
         for i in range(0,len(records),500): supabase.table("gas_data").insert(records[i:i+500]).execute()
         return {"success":True,"rowsProcessed":len(records),"message":"Gas data stored"}
     except Exception as e: return {"success":False,"message":str(e)}
