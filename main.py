@@ -1295,8 +1295,14 @@ def update_site(site_id: str, site: SiteCreate):
 
 @app.delete("/analytics/sites/{site_id}")
 def delete_site(site_id: str):
-    try: supabase.table("sites").update({"is_active":False}).eq("id",site_id).execute(); return {"success":True,"deleted":site_id}
-    except Exception as e: return {"success":False,"message":str(e)}
+    try:
+        # Soft-delete triggers the cleanup_inactive_site DB trigger which
+        # hard-deletes all energy_data, gas_data, ai_recommendations,
+        # ai_insights, and anomalies rows for this site.
+        supabase.table("sites").update({"is_active": False}).eq("id", site_id).execute()
+        return {"success": True, "deleted": site_id}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
 
 # ─── BMS — EQUIPMENT ──────────────────────────────────────────
 
@@ -2100,29 +2106,34 @@ def get_period_date_range(period_type: str):
         return str(today - timedelta(days=30)), end
     return None, end
 
-def check_generation_allowed(org_id: str, period_type: str):
+def check_generation_allowed(org_id: str, period_type: str, site_id: str = None):
     """
-    Check if generation is allowed for this org + period.
+    Check if generation is allowed for this site + period.
     Returns (allowed: bool, reason: str, existing_id: str|None)
     """
     try:
-        result = (supabase.table("ai_insights")
+        query = (supabase.table("ai_insights")
                   .select("id,generated_at,period_type")
                   .eq("status", "complete")
                   .eq("period_type", period_type)
                   .order("generated_at", desc=True)
-                  .limit(1).execute())
+                  .limit(1))
+        if site_id:
+            query = query.eq("site_id", site_id)
+        elif org_id:
+            query = query.eq("org_id", org_id)
+        result = query.execute()
         if not result.data:
             return True, "ok", None
 
         existing = result.data[0]
         generated_at = datetime.fromisoformat(existing["generated_at"].replace("Z", "+00:00").replace("+00:00", ""))
 
-        # all_time and last_year: once ever
+        # all_time and last_year: once per site ever — but allow if it's a new site
         if period_type in ("all_time", "last_year"):
-            return False, f"Already generated for {PERIOD_LABELS[period_type]}. This report can only be generated once.", existing["id"]
+            return False, f"Already generated for {PERIOD_LABELS[period_type]}. This report can only be generated once per site.", existing["id"]
 
-        # last_3_months and last_1_month: once per calendar month
+        # last_3_months and last_1_month: once per calendar month per site
         now = datetime.utcnow()
         if generated_at.year == now.year and generated_at.month == now.month:
             next_month = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
@@ -2133,11 +2144,16 @@ def check_generation_allowed(org_id: str, period_type: str):
         print(f"[ai] check_generation_allowed error: {e}")
         return True, "ok", None  # Allow on error
 
-def build_energy_summary_for_period(start_date=None, end_date=None, org_id=None):
-    """Build energy summary filtered to a date range."""
+def build_energy_summary_for_period(start_date=None, end_date=None, org_id=None, site_id=None):
+    """Build energy summary filtered to a date range and site."""
     elec_query = supabase.table("energy_data").select("timestamp,consumption").range(0, 20000)
     gas_query = supabase.table("gas_data").select("timestamp,consumption").range(0, 20000)
-    if org_id: elec_query=elec_query.eq("org_id",org_id); gas_query=gas_query.eq("org_id",org_id)
+    if site_id:
+        elec_query = elec_query.eq("site_id", site_id)
+        gas_query  = gas_query.eq("site_id", site_id)
+    elif org_id:
+        elec_query = elec_query.eq("org_id", org_id)
+        gas_query  = gas_query.eq("org_id", org_id)
     if start_date:
         elec_query = elec_query.gte("timestamp", start_date)
         gas_query = gas_query.gte("timestamp", start_date)
@@ -2231,11 +2247,11 @@ async def run_agentic_analysis(system_prompt: str, user_prompt: str, max_iterati
     return final_response
 
 
-async def run_ai_generation(org_id: str = None, period_type: str = "all_time"):
-    print(f"[ai] Starting agentic generation — period={period_type} org={org_id}")
+async def run_ai_generation(org_id: str = None, period_type: str = "all_time", site_id: str = None):
+    print(f"[ai] Starting agentic generation — period={period_type} org={org_id} site={site_id}")
     placeholder = supabase.table("ai_insights").insert({
         "status": "generating", "generated_at": datetime.utcnow().isoformat(),
-        "period_type": period_type, "org_id": org_id,
+        "period_type": period_type, "org_id": org_id, "site_id": site_id,
     }).execute()
     row_id = placeholder.data[0]["id"] if placeholder.data else None
     try:
@@ -2293,6 +2309,7 @@ Generate 6-10 insights and 6-8 recommendations. Cover all data sources. Flag act
         payload = {
             "status": "complete", "generated_at": datetime.utcnow().isoformat(),
             "period_type": period_type, "data_from": start_date, "data_to": end_date,
+            "org_id": org_id, "site_id": site_id,
             "executive_summary": result.get("executive_summary", ""),
             "insights": result.get("insights", []), "recommendations": result.get("recommendations", []),
             "raw_stats": {"period_type": period_type, "date_range": date_range_str}
@@ -2308,6 +2325,7 @@ Generate 6-10 insights and 6-8 recommendations. Cover all data sources. Flag act
 
 @app.get("/ai/insights/data-availability")
 def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
+                                    site_id: Optional[str]=Query(default=None),
                                     authorization: Optional[str]=Header(default=None)):
     """
     Check what data is available for insights generation.
@@ -2319,7 +2337,12 @@ def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
         # Check electricity data
         elec_q = supabase.table("energy_data").select("timestamp").order("timestamp", desc=False).limit(1)
         elec_latest_q = supabase.table("energy_data").select("timestamp").order("timestamp", desc=True).limit(1)
-        if org_id: elec_q=elec_q.eq("org_id",org_id); elec_latest_q=elec_latest_q.eq("org_id",org_id)
+        if site_id:
+            elec_q = elec_q.eq("site_id", site_id)
+            elec_latest_q = elec_latest_q.eq("site_id", site_id)
+        elif org_id:
+            elec_q = elec_q.eq("org_id", org_id)
+            elec_latest_q = elec_latest_q.eq("org_id", org_id)
         elec = elec_q.execute().data
         elec_latest = elec_latest_q.execute().data
         elec_available = len(elec) > 0
@@ -2329,7 +2352,12 @@ def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
         # Check gas data
         gas_q = supabase.table("gas_data").select("timestamp").order("timestamp", desc=False).limit(1)
         gas_latest_q = supabase.table("gas_data").select("timestamp").order("timestamp", desc=True).limit(1)
-        if org_id: gas_q=gas_q.eq("org_id",org_id); gas_latest_q=gas_latest_q.eq("org_id",org_id)
+        if site_id:
+            gas_q = gas_q.eq("site_id", site_id)
+            gas_latest_q = gas_latest_q.eq("site_id", site_id)
+        elif org_id:
+            gas_q = gas_q.eq("org_id", org_id)
+            gas_latest_q = gas_latest_q.eq("org_id", org_id)
         gas = gas_q.execute().data
         gas_latest = gas_latest_q.execute().data
         gas_available = len(gas) > 0
@@ -2340,11 +2368,10 @@ def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
         bms_count = supabase.table("equipment_readings").select("id", count="exact").limit(1).execute()
         bms_available = (bms_count.count or 0) > 0
 
-        # Check generation status per period
+        # Check generation status per period (scoped to site)
         periods = {}
         for period_type in ["all_time", "last_year", "last_3_months", "last_1_month"]:
-            allowed, reason, existing_id = check_generation_allowed(org_id or "", period_type)
-            # Get existing insight if any
+            allowed, reason, existing_id = check_generation_allowed(org_id or "", period_type, site_id=site_id)
             existing = None
             if existing_id:
                 row = supabase.table("ai_insights").select("id,generated_at,data_from,data_to").eq("id", existing_id).single().execute().data
@@ -2367,59 +2394,95 @@ def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
 
 @app.get("/ai/insights")
 def get_ai_insights(org_id: Optional[str]=Query(default=None),
+                    site_id: Optional[str]=Query(default=None),
                     period_type: Optional[str]=Query(default=None),
                     authorization: Optional[str]=Header(default=None)):
-    require_feature_jwt(authorization,org_id,"ai_insights")
+    require_feature_jwt(authorization, org_id, "ai_insights")
     try:
-        query = supabase.table("ai_insights").select("*").eq("status","complete").order("generated_at",desc=True)
+        query = supabase.table("ai_insights").select("*").eq("status", "complete").order("generated_at", desc=True)
+        if site_id:
+            query = query.eq("site_id", site_id)
+        elif org_id:
+            query = query.eq("org_id", org_id)
         if period_type:
             query = query.eq("period_type", period_type)
-        result = query.limit(1).execute()
+        result = query.limit(20).execute()
+
         if not result.data:
-            pending=supabase.table("ai_insights").select("id,status,period_type").eq("status","generating").order("generated_at",desc=True).limit(1).execute()
-            if pending.data: return {"status":"generating","insights":None,"period_type":pending.data[0].get("period_type")}
-            return {"status":"empty","insights":None}
-        row=result.data[0]
-        return {
-            "status":"complete","generatedAt":row["generated_at"],
-            "dataFrom":row["data_from"],"dataTo":row["data_to"],
-            "periodType":row.get("period_type","all_time"),
-            "periodLabel":PERIOD_LABELS.get(row.get("period_type","all_time"),""),
-            "executiveSummary":row["executive_summary"],
-            "insights":row["insights"] or [],"recommendations":row["recommendations"] or []
-        }
+            # Check if one is generating for this site
+            gen_query = (supabase.table("ai_insights")
+                         .select("id,status,period_type")
+                         .eq("status", "generating")
+                         .order("generated_at", desc=True)
+                         .limit(1))
+            if site_id:
+                gen_query = gen_query.eq("site_id", site_id)
+            elif org_id:
+                gen_query = gen_query.eq("org_id", org_id)
+            pending = gen_query.execute()
+            if pending.data:
+                return {"status": "generating", "runs": [], "period_type": pending.data[0].get("period_type")}
+            return {"status": "empty", "runs": []}
+
+        runs = []
+        for row in result.data:
+            runs.append({
+                "id":               row["id"],
+                "generatedAt":      row["generated_at"],
+                "dataFrom":         row["data_from"],
+                "dataTo":           row["data_to"],
+                "periodType":       row.get("period_type", "all_time"),
+                "periodLabel":      PERIOD_LABELS.get(row.get("period_type", "all_time"), ""),
+                "executiveSummary": row["executive_summary"],
+                "insights":         row["insights"] or [],
+                "recommendations":  row["recommendations"] or [],
+            })
+
+        return {"status": "complete", "runs": runs}
     except HTTPException: raise
-    except Exception as e: return {"success":False,"message":str(e)}
+    except Exception as e: return {"success": False, "message": str(e)}
 
 @app.post("/ai/insights/generate")
 async def trigger_ai_generation(background_tasks: BackgroundTasks,
                                  org_id: Optional[str]=Query(default=None),
+                                 site_id: Optional[str]=Query(default=None),
                                  period_type: str=Query(default="all_time"),
                                  authorization: Optional[str]=Header(default=None)):
-    require_feature_jwt(authorization,org_id,"ai_insights")
-    if not ANTHROPIC_API_KEY: return {"success":False,"message":"ANTHROPIC_API_KEY not configured"}
+    require_feature_jwt(authorization, org_id, "ai_insights")
+    if not ANTHROPIC_API_KEY: return {"success": False, "message": "ANTHROPIC_API_KEY not configured"}
     if period_type not in PERIOD_LABELS:
-        return {"success":False,"message":f"Invalid period_type. Must be one of: {list(PERIOD_LABELS.keys())}"}
+        return {"success": False, "message": f"Invalid period_type. Must be one of: {list(PERIOD_LABELS.keys())}"}
 
-    # Check if generation is already in progress
-    in_progress = supabase.table("ai_insights").select("id").eq("status","generating").limit(1).execute()
+    # Check if generation is already in progress for this site
+    in_progress_q = supabase.table("ai_insights").select("id").eq("status", "generating")
+    if site_id:
+        in_progress_q = in_progress_q.eq("site_id", site_id)
+    elif org_id:
+        in_progress_q = in_progress_q.eq("org_id", org_id)
+    in_progress = in_progress_q.limit(1).execute()
     if in_progress.data:
-        return {"success":False,"message":"Generation already in progress. Please wait."}
+        return {"success": False, "message": "Generation already in progress. Please wait."}
 
-    # Check generation rules
-    allowed, reason, existing_id = check_generation_allowed(org_id or "", period_type)
+    # Check generation rules (scoped to site)
+    allowed, reason, existing_id = check_generation_allowed(org_id or "", period_type, site_id=site_id)
     if not allowed:
-        return {"success":False,"message":reason,"existing_id":existing_id,"blocked":True}
+        return {"success": False, "message": reason, "existing_id": existing_id, "blocked": True}
 
-    background_tasks.add_task(run_ai_generation, org_id=org_id, period_type=period_type)
-    return {"success":True,"message":f"Generation started for {PERIOD_LABELS[period_type]}","period_type":period_type}
+    background_tasks.add_task(run_ai_generation, org_id=org_id, period_type=period_type, site_id=site_id)
+    return {"success": True, "message": f"Generation started for {PERIOD_LABELS[period_type]}", "period_type": period_type}
 
 @app.get("/ai/insights/history")
-def get_ai_insights_history(org_id: Optional[str]=Query(default=None)):
+def get_ai_insights_history(org_id: Optional[str]=Query(default=None),
+                             site_id: Optional[str]=Query(default=None)):
     try:
-        result=supabase.table("ai_insights").select("id,generated_at,data_from,data_to,status,error_message,period_type").order("generated_at",desc=True).limit(20).execute()
-        return {"history":result.data or []}
-    except Exception as e: return {"success":False,"message":str(e)}
+        query = supabase.table("ai_insights").select("id,generated_at,data_from,data_to,status,error_message,period_type").order("generated_at", desc=True)
+        if site_id:
+            query = query.eq("site_id", site_id)
+        elif org_id:
+            query = query.eq("org_id", org_id)
+        result = query.limit(20).execute()
+        return {"history": result.data or []}
+    except Exception as e: return {"success": False, "message": str(e)}
 
 
 # ─── AI RECOMMENDATIONS ───────────────────────────────────────
