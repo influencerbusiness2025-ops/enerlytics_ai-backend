@@ -2792,7 +2792,11 @@ async def upload_data(file: UploadFile=File(...), org_id: Optional[str]=Query(de
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.get("/analytics")
-def get_analytics(org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
+def get_analytics(org_id: Optional[str]=Query(default=None),
+                  site_id: Optional[str]=Query(default=None),
+                  start_date: Optional[str]=Query(default=None),
+                  end_date: Optional[str]=Query(default=None),
+                  authorization: Optional[str]=Header(default=None)):
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
@@ -2800,7 +2804,10 @@ def get_analytics(org_id: Optional[str]=Query(default=None), authorization: Opti
             if org: resolved_org_id = org.get("id")
         except: pass
     q=supabase.table("energy_data").select("*").range(0,20000)
-    if resolved_org_id: q=q.eq("org_id",resolved_org_id)
+    if site_id: q=q.eq("site_id",site_id)
+    elif resolved_org_id: q=q.eq("org_id",resolved_org_id)
+    if start_date: q=q.gte("timestamp",start_date)
+    if end_date: q=q.lte("timestamp",end_date+"T23:59:59")
     data=q.execute().data
     if not data:
         return {"stats":{"baseload":0,"peakDemand":0,"loadFactor":0,"avgDaily":0},
@@ -2877,7 +2884,11 @@ async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Quer
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.get("/gas-analytics")
-def get_gas_analytics(org_id: Optional[str]=Query(default=None), authorization: Optional[str]=Header(default=None)):
+def get_gas_analytics(org_id: Optional[str]=Query(default=None),
+                      site_id: Optional[str]=Query(default=None),
+                      start_date: Optional[str]=Query(default=None),
+                      end_date: Optional[str]=Query(default=None),
+                      authorization: Optional[str]=Header(default=None)):
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
@@ -2885,7 +2896,10 @@ def get_gas_analytics(org_id: Optional[str]=Query(default=None), authorization: 
             if org: resolved_org_id = org.get("id")
         except: pass
     q=supabase.table("gas_data").select("*").range(0,20000)
-    if resolved_org_id: q=q.eq("org_id",resolved_org_id)
+    if site_id: q=q.eq("site_id",site_id)
+    elif resolved_org_id: q=q.eq("org_id",resolved_org_id)
+    if start_date: q=q.gte("timestamp",start_date)
+    if end_date: q=q.lte("timestamp",end_date+"T23:59:59")
     data=q.execute().data
     if not data:
         return {"stats":{"baseload":0,"peakDemand":0,"loadFactor":0,"avgDaily":0},
