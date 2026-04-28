@@ -2938,14 +2938,26 @@ def debug_gas_summary(org_id: Optional[str]=Query(default=None)):
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.delete("/delete-data")
-def delete_data():
-    try: supabase.table("energy_data").delete().gt("id","00000000-0000-0000-0000-000000000000").execute(); return {"success":True,"message":"All energy data deleted"}
-    except Exception as e: return {"success":False,"message":str(e)}
+def delete_data(site_id: Optional[str]=Query(default=None), org_id: Optional[str]=Query(default=None)):
+    try:
+        q = supabase.table("energy_data").delete()
+        if site_id: q = q.eq("site_id", site_id)
+        elif org_id: q = q.eq("org_id", org_id)
+        else: q = q.gt("id", "00000000-0000-0000-0000-000000000000")
+        q.execute()
+        return {"success": True, "message": "Energy data deleted"}
+    except Exception as e: return {"success": False, "message": str(e)}
 
 @app.delete("/delete-gas-data")
-def delete_gas_data():
-    try: supabase.table("gas_data").delete().gt("id","00000000-0000-0000-0000-000000000000").execute(); return {"success":True,"message":"All gas data deleted"}
-    except Exception as e: return {"success":False,"message":str(e)}
+def delete_gas_data(site_id: Optional[str]=Query(default=None), org_id: Optional[str]=Query(default=None)):
+    try:
+        q = supabase.table("gas_data").delete()
+        if site_id: q = q.eq("site_id", site_id)
+        elif org_id: q = q.eq("org_id", org_id)
+        else: q = q.gt("id", "00000000-0000-0000-0000-000000000000")
+        q.execute()
+        return {"success": True, "message": "Gas data deleted"}
+    except Exception as e: return {"success": False, "message": str(e)}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CARBON REPORT ENDPOINTS
