@@ -2108,41 +2108,11 @@ def get_period_date_range(period_type: str):
 
 def check_generation_allowed(org_id: str, period_type: str, site_id: str = None):
     """
-    Check if generation is allowed for this site + period.
+    Generation is always allowed — no time-based restrictions.
+    Each generation creates a new row; all runs are kept in history.
     Returns (allowed: bool, reason: str, existing_id: str|None)
     """
-    try:
-        query = (supabase.table("ai_insights")
-                  .select("id,generated_at,period_type")
-                  .eq("status", "complete")
-                  .eq("period_type", period_type)
-                  .order("generated_at", desc=True)
-                  .limit(1))
-        if site_id:
-            query = query.eq("site_id", site_id)
-        elif org_id:
-            query = query.eq("org_id", org_id)
-        result = query.execute()
-        if not result.data:
-            return True, "ok", None
-
-        existing = result.data[0]
-        generated_at = datetime.fromisoformat(existing["generated_at"].replace("Z", "+00:00").replace("+00:00", ""))
-
-        # all_time and last_year: once per site ever — but allow if it's a new site
-        if period_type in ("all_time", "last_year"):
-            return False, f"Already generated for {PERIOD_LABELS[period_type]}. This report can only be generated once per site.", existing["id"]
-
-        # last_3_months and last_1_month: once per calendar month per site
-        now = datetime.utcnow()
-        if generated_at.year == now.year and generated_at.month == now.month:
-            next_month = (now.replace(day=1) + timedelta(days=32)).replace(day=1)
-            return False, f"Already generated this month. Next generation available from {next_month.strftime('%1 %B %Y')}.", existing["id"]
-
-        return True, "ok", None
-    except Exception as e:
-        print(f"[ai] check_generation_allowed error: {e}")
-        return True, "ok", None  # Allow on error
+    return True, "ok", None
 
 def build_energy_summary_for_period(start_date=None, end_date=None, org_id=None, site_id=None):
     """Build energy summary filtered to a date range and site."""
