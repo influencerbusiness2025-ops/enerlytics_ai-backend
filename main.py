@@ -2839,6 +2839,7 @@ def get_hourly_profile_by_year(year: int, org_id: Optional[str]=Query(default=No
 @app.post("/upload-gas-data")
 async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Query(default=None),
                            site_id: Optional[str]=Query(default=None),
+                           unit: Optional[str]=Query(default="kwh"),
                            authorization: Optional[str]=Header(default=None)):
     try:
         contents=await file.read(); df=pd.read_csv(StringIO(contents.decode("utf-8")),index_col=None)
@@ -2854,6 +2855,9 @@ async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Quer
         df_agg=df_long.groupby("timestamp",as_index=False)["consumption"].sum()
         if df_agg.empty: return {"success":False,"message":"No valid data"}
         df_agg["timestamp"]=df_agg["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+        # Convert m3 to kWh if unit is m3 (1 m3 natural gas = 11.163 kWh)
+        if unit and unit.lower() == "m3":
+            df_agg["consumption"] = df_agg["consumption"] * 11.163
         df_agg["consumption"]=df_agg["consumption"].astype(float)
         records=df_agg.to_dict(orient="records")
         resolved_org_id = org_id
@@ -2866,7 +2870,8 @@ async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Quer
             if resolved_org_id: r["org_id"] = resolved_org_id
             if site_id: r["site_id"] = site_id
         for i in range(0,len(records),500): supabase.table("gas_data").insert(records[i:i+500]).execute()
-        return {"success":True,"rowsProcessed":len(records),"message":"Gas data stored"}
+        unit_label = "m³ (converted to kWh)" if unit and unit.lower() == "m3" else "kWh"
+        return {"success":True,"rowsProcessed":len(records),"message":f"Gas data stored as {unit_label}"}
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.get("/gas-analytics")
