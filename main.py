@@ -38,8 +38,19 @@ supabase_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
 # ─── APP ──────────────────────────────────────────────────────
 
 app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
-                   allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://ai.effictraenergy.co.uk",
+        "https://api.effictraenergy.co.uk",
+        "https://effictraai-backend-production.up.railway.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ─── MODELS ───────────────────────────────────────────────────
 
