@@ -2475,7 +2475,7 @@ async def run_recommendations_generation(org_id: str = None, site_id: str = None
     Uses last 30 days as the primary window for freshness.
     """
     print(f"[recs] Starting recommendations generation for org={org_id} site={site_id}")
-    placeholder = supabase.table("ai_recommendations").insert({
+    placeholder = supabase_service.table("ai_recommendations").insert({
         "status": "generating", "generated_at": datetime.utcnow().isoformat(),
         "org_id": org_id, "site_id": site_id,
     }).execute()
@@ -2552,13 +2552,13 @@ Base everything on actual data from your tool calls. Return ONLY JSON."""
             "long_term": result.get("long_term", []),
             "urgent_alerts": result.get("urgent_alerts", []),
         }
-        if row_id: supabase.table("ai_recommendations").update(payload).eq("id", row_id).execute()
-        else: supabase.table("ai_recommendations").insert(payload).execute()
+        if row_id: supabase_service.table("ai_recommendations").update(payload).eq("id", row_id).execute()
+        else: supabase_service.table("ai_recommendations").insert(payload).execute()
         print(f"[recs] Done — {len(result.get('quick_wins',[]))} quick wins, {len(result.get('urgent_alerts',[]))} alerts")
     except Exception as e:
         print(f"[recs] Failed: {e}")
         import traceback; traceback.print_exc()
-        if row_id: supabase.table("ai_recommendations").update({"status": "error", "error_message": str(e)}).eq("id", row_id).execute()
+        if row_id: supabase_service.table("ai_recommendations").update({"status": "error", "error_message": str(e)}).eq("id", row_id).execute()
 
 
 @app.get("/ai/recommendations")
