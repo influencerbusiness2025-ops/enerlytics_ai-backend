@@ -2468,15 +2468,16 @@ def get_ai_insights_history(org_id: Optional[str]=Query(default=None),
 
 # ─── AI RECOMMENDATIONS ───────────────────────────────────────
 
-async def run_recommendations_generation(org_id: str = None):
+async def run_recommendations_generation(org_id: str = None, site_id: str = None):
     """
     Generate always-live action recommendations using full data access.
     Covers electricity + gas + BMS equipment.
     Uses last 30 days as the primary window for freshness.
     """
-    print(f"[recs] Starting recommendations generation for org={org_id}")
+    print(f"[recs] Starting recommendations generation for org={org_id} site={site_id}")
     placeholder = supabase.table("ai_recommendations").insert({
-        "status": "generating", "generated_at": datetime.utcnow().isoformat(), "org_id": org_id,
+        "status": "generating", "generated_at": datetime.utcnow().isoformat(),
+        "org_id": org_id, "site_id": site_id,
     }).execute()
     row_id = placeholder.data[0]["id"] if placeholder.data else None
     try:
@@ -2543,7 +2544,8 @@ Base everything on actual data from your tool calls. Return ONLY JSON."""
         result = json.loads(raw)
 
         payload = {
-            "status": "complete", "generated_at": datetime.utcnow().isoformat(), "org_id": org_id,
+            "status": "complete", "generated_at": datetime.utcnow().isoformat(),
+            "org_id": org_id, "site_id": site_id,
             "summary": result.get("summary", ""),
             "quick_wins": result.get("quick_wins", []),
             "medium_term": result.get("medium_term", []),
@@ -2561,11 +2563,13 @@ Base everything on actual data from your tool calls. Return ONLY JSON."""
 
 @app.get("/ai/recommendations")
 def get_recommendations(org_id: Optional[str]=Query(default=None),
+                         site_id: Optional[str]=Query(default=None),
                          authorization: Optional[str]=Header(default=None)):
     require_feature_jwt(authorization, org_id, "ai_recommendations")
     try:
         query = supabase.table("ai_recommendations").select("*").eq("status", "complete").order("generated_at", desc=True)
         if org_id: query = query.eq("org_id", org_id)
+        if site_id: query = query.eq("site_id", site_id)
         result = query.limit(1).execute()
         if not result.data:
             pending = supabase.table("ai_recommendations").select("id,status").eq("status","generating").limit(1).execute()
@@ -2588,12 +2592,13 @@ def get_recommendations(org_id: Optional[str]=Query(default=None),
 @app.post("/ai/recommendations/generate")
 async def trigger_recommendations(background_tasks: BackgroundTasks,
                                    org_id: Optional[str]=Query(default=None),
+                                   site_id: Optional[str]=Query(default=None),
                                    authorization: Optional[str]=Header(default=None)):
     require_feature_jwt(authorization, org_id, "ai_recommendations")
     if not ANTHROPIC_API_KEY: return {"success": False, "message": "ANTHROPIC_API_KEY not configured"}
     in_progress = supabase.table("ai_recommendations").select("id").eq("status","generating").limit(1).execute()
     if in_progress.data: return {"success": False, "message": "Generation already in progress"}
-    background_tasks.add_task(run_recommendations_generation, org_id=org_id)
+    background_tasks.add_task(run_recommendations_generation, org_id=org_id, site_id=site_id)
     return {"success": True, "message": "Recommendations generation started"}
 
 # ─── AI ANALYST ───────────────────────────────────────────────
