@@ -2757,7 +2757,16 @@ async def upload_data(file: UploadFile=File(...), org_id: Optional[str]=Query(de
         df_long=df.melt(id_vars=[date_col],value_vars=time_columns,var_name="time",value_name="consumption")
         df_long["consumption"]=pd.to_numeric(df_long["consumption"],errors="coerce")
         df_long=df_long.dropna(subset=["consumption"])
-        df_long["timestamp"]=pd.to_datetime(df_long[date_col].astype(str)+" "+df_long["time"].astype(str),dayfirst=True,errors="coerce")
+        # Handle 24:00:00 (end-of-day) → roll to 00:00:00 next day
+        def parse_halfhourly_timestamp(row):
+            time_str = str(row["time"]).strip()
+            date_str = str(row[date_col]).strip()
+            if time_str == "24:00:00" or time_str == "24:00":
+                try:
+                    return pd.to_datetime(date_str, dayfirst=True, errors="coerce") + pd.Timedelta(days=1)
+                except: return pd.NaT
+            return pd.to_datetime(date_str + " " + time_str, dayfirst=True, errors="coerce")
+        df_long["timestamp"] = df_long.apply(parse_halfhourly_timestamp, axis=1)
         df_long=df_long.dropna(subset=["timestamp"])
         df_agg=df_long.groupby("timestamp",as_index=False)["consumption"].sum()
         if df_agg.empty: return {"success":False,"message":"No valid data"}
@@ -2849,7 +2858,16 @@ async def upload_gas_data(file: UploadFile=File(...), org_id: Optional[str]=Quer
         df_long=df.melt(id_vars=[date_col],value_vars=time_columns,var_name="time",value_name="consumption")
         df_long["consumption"]=pd.to_numeric(df_long["consumption"],errors="coerce")
         df_long=df_long.dropna(subset=["consumption"])
-        df_long["timestamp"]=pd.to_datetime(df_long[date_col].astype(str)+" "+df_long["time"].astype(str),dayfirst=True,errors="coerce")
+        # Handle 24:00:00 (end-of-day) → roll to 00:00:00 next day
+        def parse_halfhourly_timestamp_gas(row):
+            time_str = str(row["time"]).strip()
+            date_str = str(row[date_col]).strip()
+            if time_str == "24:00:00" or time_str == "24:00":
+                try:
+                    return pd.to_datetime(date_str, dayfirst=True, errors="coerce") + pd.Timedelta(days=1)
+                except: return pd.NaT
+            return pd.to_datetime(date_str + " " + time_str, dayfirst=True, errors="coerce")
+        df_long["timestamp"] = df_long.apply(parse_halfhourly_timestamp_gas, axis=1)
         df_long=df_long.dropna(subset=["timestamp"])
         df_agg=df_long.groupby("timestamp",as_index=False)["consumption"].sum()
         if df_agg.empty: return {"success":False,"message":"No valid data"}
