@@ -198,7 +198,11 @@ def get_org_for_user(auth_id):
     except Exception as e:
         print(f"[auth] error: {e}"); return None
 
-def get_effective_tier(org): return org.get("tier","basic") if org else "basic"
+def get_effective_tier(org):
+    if not org: return "basic"
+    tier = org.get("tier", "basic")
+    if tier == "custom": return "enterprise"
+    return tier
 
 def require_auth(authorization):
     auth_user = get_user_from_token(authorization)
@@ -222,6 +226,7 @@ def get_org_tier_by_id(org_id):
                     supabase.table("organisations").update({"tier":"basic"}).eq("id",org_id).execute()
                     return "basic"
         tier = org.get("tier", "basic")
+        if tier == "custom": return "enterprise"
         if tier not in TIER_FEATURES: tier = "basic"
         return tier
     except Exception: return "basic"
@@ -245,7 +250,10 @@ def resolve_tier(authorization, org_id):
     return get_org_tier_by_id(org_id), None
 
 def require_feature_jwt(authorization, org_id, feature):
-    tier, _ = resolve_tier(authorization, org_id)
+    tier, org = resolve_tier(authorization, org_id)
+    print(f"[feature_gate] feature={feature} org_id={org_id} resolved_tier={tier} org={org}")
+    # Treat custom tier as enterprise
+    if tier == "custom": tier = "enterprise"
     features = TIER_FEATURES.get(tier, {})
     if not features.get(feature, False):
         required = FEATURE_REQUIRED_TIER.get(feature, "standard")
