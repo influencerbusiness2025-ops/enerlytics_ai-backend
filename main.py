@@ -182,7 +182,7 @@ def get_user_from_token(authorization):
 
 def get_org_for_user(auth_id):
     try:
-        result = (supabase.table("users").select("org_id, role, organisations(*)")
+        result = (supabase_service.table("users").select("org_id, role, organisations(*)")
                   .eq("auth_id", auth_id).single().execute())
         if not result.data: return None
         org = result.data.get("organisations", {})
