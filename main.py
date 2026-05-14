@@ -198,11 +198,7 @@ def get_org_for_user(auth_id):
     except Exception as e:
         print(f"[auth] error: {e}"); return None
 
-def get_effective_tier(org):
-    if not org: return "basic"
-    tier = org.get("tier", "basic")
-    if tier == "custom": return "enterprise"
-    return tier
+def get_effective_tier(org): return org.get("tier","basic") if org else "basic"
 
 def require_auth(authorization):
     auth_user = get_user_from_token(authorization)
@@ -226,7 +222,6 @@ def get_org_tier_by_id(org_id):
                     supabase.table("organisations").update({"tier":"basic"}).eq("id",org_id).execute()
                     return "basic"
         tier = org.get("tier", "basic")
-        if tier == "custom": return "enterprise"
         if tier not in TIER_FEATURES: tier = "basic"
         return tier
     except Exception: return "basic"
@@ -250,10 +245,7 @@ def resolve_tier(authorization, org_id):
     return get_org_tier_by_id(org_id), None
 
 def require_feature_jwt(authorization, org_id, feature):
-    tier, org = resolve_tier(authorization, org_id)
-    print(f"[feature_gate] feature={feature} org_id={org_id} resolved_tier={tier} org={org}")
-    # Treat custom tier as enterprise
-    if tier == "custom": tier = "enterprise"
+    tier, _ = resolve_tier(authorization, org_id)
     features = TIER_FEATURES.get(tier, {})
     if not features.get(feature, False):
         required = FEATURE_REQUIRED_TIER.get(feature, "standard")
@@ -2111,18 +2103,24 @@ PERIOD_LABELS = {
     "last_1_month":   "Last month",
 }
 
-def get_period_date_range(period_type: str):
-    """Return (start_date, end_date) strings for a period type."""
-    today = datetime.utcnow().date()
-    end = str(today)
+def get_period_date_range(period_type: str, anchor_date: str = None):
+    """Return (start_date, end_date) strings for a period type.
+    anchor_date: latest available data date (YYYY-MM-DD). Falls back to today if not provided.
+    """
+    if anchor_date:
+        try: end_dt = datetime.strptime(anchor_date, "%Y-%m-%d").date()
+        except: end_dt = datetime.utcnow().date()
+    else:
+        end_dt = datetime.utcnow().date()
+    end = str(end_dt)
     if period_type == "all_time":
-        return None, end  # No start filter
+        return None, end
     elif period_type == "last_year":
-        return str(today - timedelta(days=365)), end
+        return str(end_dt - timedelta(days=365)), end
     elif period_type == "last_3_months":
-        return str(today - timedelta(days=90)), end
+        return str(end_dt - timedelta(days=90)), end
     elif period_type == "last_1_month":
-        return str(today - timedelta(days=30)), end
+        return str(end_dt - timedelta(days=30)), end
     return None, end
 
 def check_generation_allowed(org_id: str, period_type: str, site_id: str = None):
@@ -2372,11 +2370,21 @@ def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
                 "existing": existing,
             }
 
+        # Build period date ranges anchored to actual latest data date
+        anchor = elec_to or gas_to
+        period_ranges = {}
+        for pt in ["all_time", "last_year", "last_3_months", "last_1_month"]:
+            pfrom, pto = get_period_date_range(pt, anchor_date=anchor)
+            period_ranges[pt] = {"date_from": pfrom, "date_to": pto}
+
         return {
             "electricity": {"available": elec_available, "from": elec_from, "to": elec_to},
             "gas": {"available": gas_available, "from": gas_from, "to": gas_to},
             "bms": {"available": bms_available},
             "periods": periods,
+            "period_ranges": period_ranges,
+            "data_start": elec_from or gas_from,
+            "data_end": elec_to or gas_to,
         }
     except HTTPException: raise
     except Exception as e: return {"success": False, "message": str(e)}
