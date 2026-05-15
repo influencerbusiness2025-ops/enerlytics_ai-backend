@@ -37,7 +37,40 @@ TIER_FEATURES = {
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": True, "settings_sites": True, "multi_site": False,
         "api_access": False, "bms_parameters": True, "carbon_reporting": True,
-    }
+    },
+    "basic": {
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": False, "ai_recommendations": False, "ai_energy_analyst": False,
+        "ai_senior_consultant": False, "weather_normalisation": False,
+        "report_basic": True, "report_ai_insights": False, "report_full": False,
+        "report_premium_full": False, "settings_sites": True, "multi_site": False,
+        "api_access": False, "bms_parameters": False, "carbon_reporting": False,
+    },
+    "standard": {
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": False,
+        "ai_senior_consultant": False, "weather_normalisation": True,
+        "report_basic": True, "report_ai_insights": True, "report_full": True,
+        "report_premium_full": False, "settings_sites": True, "multi_site": True,
+        "api_access": False, "bms_parameters": False, "carbon_reporting": True,
+    },
+    "premium": {
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
+        "ai_senior_consultant": False, "weather_normalisation": True,
+        "report_basic": True, "report_ai_insights": True, "report_full": True,
+        "report_premium_full": True, "settings_sites": True, "multi_site": True,
+        "api_access": True, "bms_parameters": True, "carbon_reporting": True,
+    },
+    "enterprise": {
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
+        "ai_senior_consultant": True, "weather_normalisation": True,
+        "report_basic": True, "report_ai_insights": True, "report_full": True,
+        "report_premium_full": True, "settings_sites": True, "multi_site": True,
+        "api_access": True, "bms_parameters": True, "carbon_reporting": True,
+    },
+}
 
 FEATURE_REQUIRED_TIER = {
     "ai_insights":           "standard",
@@ -53,6 +86,7 @@ FEATURE_REQUIRED_TIER = {
     "bms_parameters":        "premium",
     "ai_senior_consultant":  "enterprise",
 }
+
 
 
 # ── Auth helpers ──────────────────────────────────────────────────────────────
