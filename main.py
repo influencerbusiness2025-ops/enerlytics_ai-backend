@@ -2486,9 +2486,9 @@ def get_ai_insights_history(org_id: Optional[str]=Query(default=None),
 
 async def run_recommendations_generation(org_id: str = None, site_id: str = None):
     """
-    Generate always-live action recommendations using full data access.
-    Covers electricity + gas + BMS equipment.
-    Uses last 30 days as the primary window for freshness.
+    Generate prioritised action recommendations grounded in AI Insights findings.
+    Loads the latest ai_insights run for the site and uses those findings as the
+    analytical foundation, supplemented by fresh tool-call data.
     """
     print(f"[recs] Starting recommendations generation for org={org_id} site={site_id}")
     placeholder = supabase_service.table("ai_recommendations").insert({
@@ -2500,54 +2500,123 @@ async def run_recommendations_generation(org_id: str = None, site_id: str = None
         today = datetime.utcnow().strftime("%Y-%m-%d")
         start_30d = (datetime.utcnow() - timedelta(days=30)).strftime("%Y-%m-%d")
 
-        system_prompt = f"""You are an expert energy consultant generating a prioritised action list for a building operator.
-Today: {today} | Data window: last 30 days ({start_30d} to {today})
+        # ── Load latest AI Insights for this site ─────────────────────────────
+        insights_context = ""
+        try:
+            ai_q = supabase_service.table("ai_insights").select(
+                "executive_summary,insights,period_label,generated_at"
+            ).eq("status", "complete").order("generated_at", desc=True)
+            if site_id: ai_q = ai_q.eq("site_id", site_id)
+            elif org_id: ai_q = ai_q.eq("org_id", org_id)
+            ai_result = ai_q.limit(1).execute()
+            if ai_result.data:
+                row = ai_result.data[0]
+                exec_summary = row.get("executive_summary", "")
+                insights_list = row.get("insights", []) or []
+                period = row.get("period_label", "")
+                generated = row.get("generated_at", "")[:10]
+                # Format insights into a readable context block
+                insights_formatted = ""
+                for ins in insights_list:
+                    title = ins.get("title", "")
+                    finding = ins.get("finding", "")
+                    implication = ins.get("implication", "")
+                    metric = ins.get("metric", "")
+                    metric_label = ins.get("metric_label", "")
+                    category = ins.get("category", "")
+                    severity = ins.get("severity", "")
+                    insights_formatted += (
+                        f"  - [{category.upper()} / {severity}] {title} "
+                        f"(metric: {metric} {metric_label})\n"
+                        f"    Finding: {finding}\n"
+                        f"    Implication: {implication}\n"
+                    )
+                insights_context = f"""
+## AI INSIGHTS (generated {generated}, period: {period})
+Executive Summary: {exec_summary}
+
+Key Findings:
+{insights_formatted}
+"""
+                print(f"[recs] Loaded {len(insights_list)} AI insights as context")
+            else:
+                print("[recs] No AI insights found — generating from raw data only")
+        except Exception as e:
+            print(f"[recs] Could not load AI insights: {e}")
+
+        # ── Build system prompt grounded in insights ───────────────────────────
+        system_prompt = f"""You are an expert energy consultant generating a prioritised action plan for a building operator.
+Today: {today} | Fresh data window: last 30 days ({start_30d} to {today})
 UK rates: Electricity £{ELECTRICITY_RATE_GBP}/kWh | Gas £{GAS_RATE_GBP}/kWh
 
-Use your tools to gather current data from electricity, gas, and BMS equipment, then produce a prioritised action list.
+{insights_context}
 
-REQUIRED tool calls:
-1. get_active_faults — URGENT: any active faults need immediate action
-2. get_site_equipment — understand what equipment exists
-3. get_daily_summary start={start_30d} end={today} — recent electricity
-4. get_gas_data start={start_30d} end={today} — recent gas
-5. get_anomalies start={start_30d} end={today} — recent anomalies
-6. get_equipment_readings for key equipment — check temperatures, run hours, valve positions
+The AI Insights above are your PRIMARY analytical foundation. Your recommendations MUST:
+1. Directly reference and build on the specific findings, metrics, and implications from the insights
+2. Convert each high-severity and medium-severity insight into a concrete, actionable recommendation
+3. Use the exact figures from the insights (e.g. "the 598 anomalies detected", "£46,340 annual cost", "17.16 kWh peak demand")
+4. Supplement with fresh tool-call data to validate and add recency
+
+REQUIRED tool calls to supplement insights:
+1. get_daily_summary start={start_30d} end={today} — confirm recent electricity trends
+2. get_gas_data start={start_30d} end={today} — confirm recent gas trends  
+3. get_anomalies start={start_30d} end={today} — any new anomalies since insights were generated
+4. get_site_equipment — check BMS equipment status
 
 Then return ONLY this JSON:
 {{
   "generated_at": "{today}",
-  "data_window": "Last 30 days",
-  "summary": "2 sentences: current energy spend rate + top priority action right now",
+  "data_window": "Based on AI Insights analysis",
+  "insights_reference": "AI Insights analysis loaded",
+  "summary": "2 sentences referencing the top insight finding + the single highest-impact action",
   "quick_wins": [{{
-    "id": "slug", "title": "Action title", "action": "Exactly what to do",
-    "why": "What data shows this is needed", "saving_gbp_monthly": 0,
-    "saving_kwh_monthly": 0, "effort": "low", "can_do_today": true,
+    "id": "slug", "title": "Action title", "action": "Exactly what to do — specific, not generic",
+    "why": "Reference the specific insight finding that drives this (e.g. 'AI Insights found 598 anomalies...')",
+    "insight_id": "id of the insight this derives from (or null)",
+    "saving_gbp_monthly": 0, "saving_kwh_monthly": 0,
+    "effort": "low", "can_do_today": true,
+    "audience": ["facilities"], "category": "controls|monitoring|procurement|equipment",
     "data_source": "electricity|gas|bms|combined"
   }}],
   "medium_term": [{{
     "id": "slug", "title": "Action title", "action": "Exactly what to do",
-    "why": "What data shows this is needed", "saving_gbp_monthly": 0,
-    "saving_kwh_monthly": 0, "effort": "medium", "timeframe": "1-3 months",
-    "investment_gbp": 0, "payback_months": 0, "data_source": "electricity|gas|bms|combined"
+    "why": "Reference the specific insight finding",
+    "insight_id": "id of the driving insight or null",
+    "saving_gbp_monthly": 0, "saving_kwh_monthly": 0,
+    "effort": "medium", "timeframe": "1-3 months",
+    "investment_gbp": 0, "payback_months": 0,
+    "audience": ["facilities", "consultant"],
+    "category": "controls|monitoring|procurement|equipment",
+    "data_source": "electricity|gas|bms|combined"
   }}],
   "long_term": [{{
     "id": "slug", "title": "Action title", "action": "Exactly what to do",
-    "why": "What data shows this is needed", "saving_gbp_monthly": 0,
-    "saving_kwh_monthly": 0, "effort": "high", "timeframe": "3-12 months",
-    "investment_gbp": 0, "payback_months": 0, "data_source": "electricity|gas|bms|combined"
+    "why": "Reference the specific insight finding",
+    "insight_id": "id of the driving insight or null",
+    "saving_gbp_monthly": 0, "saving_kwh_monthly": 0,
+    "effort": "high", "timeframe": "3-12 months",
+    "investment_gbp": 0, "payback_months": 0,
+    "audience": ["consultant", "executive"],
+    "category": "controls|monitoring|procurement|equipment",
+    "data_source": "electricity|gas|bms|combined"
   }}],
   "urgent_alerts": [{{
     "id": "slug", "type": "fault|anomaly|threshold",
-    "title": "Alert title", "detail": "What was found and why it needs attention now",
-    "equipment": "equipment name if applicable", "action": "What to do immediately"
+    "title": "Alert title", "detail": "Specific data point — what was found and exact figures",
+    "equipment": "equipment name if applicable", "action": "Exactly what to do immediately"
   }}]
 }}
 
-Generate 3-5 quick wins, 3-4 medium term, 2-3 long term. Add urgent_alerts for any active faults or anomalies.
-Base everything on actual data from your tool calls. Return ONLY JSON."""
+Generate 3-5 quick wins, 3-4 medium term, 2-3 long term. Each must trace back to a specific insight finding.
+Add urgent_alerts for high-severity insights and any new anomalies from tool calls.
+Return ONLY valid JSON — no markdown, no preamble."""
 
-        user_prompt = f"Generate a fresh prioritised action list for today ({today}). Check faults first, then review last 30 days of electricity, gas, and BMS equipment data."
+        user_prompt = (
+            f"Generate a prioritised action plan for today ({today}). "
+            f"Use the AI Insights findings as your primary source and supplement with "
+            f"fresh tool-call data from the last 30 days. Every recommendation must "
+            f"reference a specific finding from the insights."
+        )
 
         raw = await run_agentic_analysis(system_prompt, user_prompt, max_iterations=10, org_id=org_id)
         raw = raw.strip()
