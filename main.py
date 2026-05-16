@@ -2896,7 +2896,6 @@ def get_analytics(org_id: Optional[str]=Query(default=None),
                   date_from: Optional[str]=Query(default=None),
                   date_to: Optional[str]=Query(default=None),
                   authorization: Optional[str]=Header(default=None)):
-    # Support both start_date/end_date and date_from/date_to param names
     effective_start = start_date or date_from
     effective_end = end_date or date_to
     resolved_org_id = org_id
@@ -2999,7 +2998,11 @@ def get_gas_analytics(org_id: Optional[str]=Query(default=None),
                       site_id: Optional[str]=Query(default=None),
                       start_date: Optional[str]=Query(default=None),
                       end_date: Optional[str]=Query(default=None),
+                      date_from: Optional[str]=Query(default=None),
+                      date_to: Optional[str]=Query(default=None),
                       authorization: Optional[str]=Header(default=None)):
+    effective_start = start_date or date_from
+    effective_end = end_date or date_to
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
