@@ -2893,7 +2893,12 @@ def get_analytics(org_id: Optional[str]=Query(default=None),
                   site_id: Optional[str]=Query(default=None),
                   start_date: Optional[str]=Query(default=None),
                   end_date: Optional[str]=Query(default=None),
+                  date_from: Optional[str]=Query(default=None),
+                  date_to: Optional[str]=Query(default=None),
                   authorization: Optional[str]=Header(default=None)):
+    # Support both start_date/end_date and date_from/date_to param names
+    effective_start = start_date or date_from
+    effective_end = end_date or date_to
     resolved_org_id = org_id
     if not resolved_org_id and authorization:
         try:
@@ -2903,8 +2908,8 @@ def get_analytics(org_id: Optional[str]=Query(default=None),
     q=supabase.table("energy_data").select("*").range(0,20000)
     if site_id: q=q.eq("site_id",site_id)
     elif resolved_org_id: q=q.eq("org_id",resolved_org_id)
-    if start_date: q=q.gte("timestamp",start_date)
-    if end_date: q=q.lte("timestamp",end_date+"T23:59:59")
+    if effective_start: q=q.gte("timestamp",effective_start)
+    if effective_end: q=q.lte("timestamp",effective_end+"T23:59:59")
     data=q.execute().data
     if not data:
         return {"stats":{"baseload":0,"peakDemand":0,"loadFactor":0,"avgDaily":0},
@@ -3004,8 +3009,8 @@ def get_gas_analytics(org_id: Optional[str]=Query(default=None),
     q=supabase.table("gas_data").select("*").range(0,20000)
     if site_id: q=q.eq("site_id",site_id)
     elif resolved_org_id: q=q.eq("org_id",resolved_org_id)
-    if start_date: q=q.gte("timestamp",start_date)
-    if end_date: q=q.lte("timestamp",end_date+"T23:59:59")
+    if effective_start: q=q.gte("timestamp",effective_start)
+    if effective_end: q=q.lte("timestamp",effective_end+"T23:59:59")
     data=q.execute().data
     if not data:
         return {"stats":{"baseload":0,"peakDemand":0,"loadFactor":0,"avgDaily":0},
