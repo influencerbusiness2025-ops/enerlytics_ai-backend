@@ -2904,7 +2904,7 @@ def get_analytics(org_id: Optional[str]=Query(default=None),
             _, org = require_auth(authorization)
             if org: resolved_org_id = org.get("id")
         except: pass
-    q=supabase.table("energy_data").select("*").range(0,20000)
+    q=supabase.table("energy_data").select("timestamp,consumption").range(0,20000)
     if site_id: q=q.eq("site_id",site_id)
     elif resolved_org_id: q=q.eq("org_id",resolved_org_id)
     if effective_start: q=q.gte("timestamp",effective_start)
@@ -3009,7 +3009,7 @@ def get_gas_analytics(org_id: Optional[str]=Query(default=None),
             _, org = require_auth(authorization)
             if org: resolved_org_id = org.get("id")
         except: pass
-    q=supabase.table("gas_data").select("*").range(0,20000)
+    q=supabase.table("gas_data").select("timestamp,consumption").range(0,20000)
     if site_id: q=q.eq("site_id",site_id)
     elif resolved_org_id: q=q.eq("org_id",resolved_org_id)
     if effective_start: q=q.gte("timestamp",effective_start)
