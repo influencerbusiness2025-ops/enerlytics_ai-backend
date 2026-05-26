@@ -3095,23 +3095,49 @@ def debug_gas_summary(org_id: Optional[str]=Query(default=None)):
 @app.delete("/delete-data")
 def delete_data(site_id: Optional[str]=Query(default=None), org_id: Optional[str]=Query(default=None)):
     try:
-        q = supabase.table("energy_data").delete()
+        deleted = {}
+        # Delete electricity data
+        q = supabase_service.table("energy_data").delete()
         if site_id: q = q.eq("site_id", site_id)
         elif org_id: q = q.eq("org_id", org_id)
         else: q = q.gt("id", "00000000-0000-0000-0000-000000000000")
-        q.execute()
-        return {"success": True, "message": "Energy data deleted"}
+        q.execute(); deleted["energy_data"] = True
+        # Delete all anomalies for this site/org
+        aq = supabase_service.table("anomalies").delete()
+        if site_id: aq = aq.eq("site_id", site_id)
+        elif org_id: aq = aq.eq("org_id", org_id)
+        else: aq = aq.gt("id", "00000000-0000-0000-0000-000000000000")
+        aq.execute(); deleted["anomalies"] = True
+        # Delete AI insights
+        iq = supabase_service.table("ai_insights").delete()
+        if site_id: iq = iq.eq("site_id", site_id)
+        elif org_id: iq = iq.eq("org_id", org_id)
+        else: iq = iq.gt("id", "00000000-0000-0000-0000-000000000000")
+        iq.execute(); deleted["ai_insights"] = True
+        # Delete AI recommendations
+        rq = supabase_service.table("ai_recommendations").delete()
+        if site_id: rq = rq.eq("site_id", site_id)
+        elif org_id: rq = rq.eq("org_id", org_id)
+        else: rq = rq.gt("id", "00000000-0000-0000-0000-000000000000")
+        rq.execute(); deleted["ai_recommendations"] = True
+        return {"success": True, "message": "Energy data and all related records deleted", "deleted": deleted}
     except Exception as e: return {"success": False, "message": str(e)}
 
 @app.delete("/delete-gas-data")
 def delete_gas_data(site_id: Optional[str]=Query(default=None), org_id: Optional[str]=Query(default=None)):
     try:
-        q = supabase.table("gas_data").delete()
+        # Delete gas data
+        q = supabase_service.table("gas_data").delete()
         if site_id: q = q.eq("site_id", site_id)
         elif org_id: q = q.eq("org_id", org_id)
         else: q = q.gt("id", "00000000-0000-0000-0000-000000000000")
         q.execute()
-        return {"success": True, "message": "Gas data deleted"}
+        # Delete gas-specific anomalies only (electricity anomalies remain valid)
+        aq = supabase_service.table("anomalies").delete().eq("energy_type", "gas")
+        if site_id: aq = aq.eq("site_id", site_id)
+        elif org_id: aq = aq.eq("org_id", org_id)
+        aq.execute()
+        return {"success": True, "message": "Gas data and gas anomalies deleted"}
     except Exception as e: return {"success": False, "message": str(e)}
 
 # ─────────────────────────────────────────────────────────────────────────────
