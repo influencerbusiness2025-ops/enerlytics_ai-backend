@@ -1291,39 +1291,78 @@ def expire_trials():
 # ─── SITES ────────────────────────────────────────────────────
 
 @app.get("/analytics/sites")
-def get_sites():
+def get_sites(authorization: Optional[str]=Header(default=None)):
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+    org = get_org_for_user(auth_user.id)
+    if not org:
+        raise HTTPException(status_code=403, detail="No organisation found")
     try:
-        result=supabase.table("sites").select("id,name,lat,lng,timezone,base_temp,mode,address,building_type").eq("is_active",True).order("name").execute()
-        return {"sites":result.data or []}
+        result = (supabase_service.table("sites")
+                  .select("id,name,lat,lng,timezone,base_temp,mode,address,building_type,is_active,climate_zone,currency,electricity_rate,gas_rate")
+                  .eq("org_id", org["id"])
+                  .eq("is_active", True)
+                  .order("name").execute())
+        return {"sites": result.data or []}
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.post("/analytics/sites")
-def create_site(site: SiteCreate):
+def create_site(site: SiteCreate, authorization: Optional[str]=Header(default=None)):
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+    org = get_org_for_user(auth_user.id)
+    if not org:
+        raise HTTPException(status_code=403, detail="No organisation found")
     try:
         base_temp=auto_base_temp(site.lat,site.base_temp)
-        result=supabase.table("sites").insert({"name":site.name,"lat":site.lat,"lng":site.lng,
+        result=supabase_service.table("sites").insert({"name":site.name,"lat":site.lat,"lng":site.lng,
             "timezone":site.timezone,"base_temp":base_temp,"mode":site.mode,
-            "address":site.address,"building_type":site.building_type,"is_active":True}).execute()
+            "address":site.address,"building_type":site.building_type,
+            "is_active":True,"org_id":org["id"]}).execute()
         return {"success":True,"site":result.data[0] if result.data else None}
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.put("/analytics/sites/{site_id}")
-def update_site(site_id: str, site: SiteCreate):
+def update_site(site_id: str, site: SiteCreate, authorization: Optional[str]=Header(default=None)):
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+    org = get_org_for_user(auth_user.id)
+    if not org:
+        raise HTTPException(status_code=403, detail="No organisation found")
     try:
-        result=supabase.table("sites").update({"name":site.name,"lat":site.lat,"lng":site.lng,
+        # Verify site belongs to this org before updating
+        check = supabase_service.table("sites").select("id").eq("id",site_id).eq("org_id",org["id"]).single().execute()
+        if not check.data:
+            raise HTTPException(status_code=403, detail="Site not found or access denied")
+        result=supabase_service.table("sites").update({"name":site.name,"lat":site.lat,"lng":site.lng,
             "timezone":site.timezone,"base_temp":site.base_temp,"mode":site.mode,
             "address":site.address,"building_type":site.building_type}).eq("id",site_id).execute()
         return {"success":True,"site":result.data[0] if result.data else None}
+    except HTTPException: raise
     except Exception as e: return {"success":False,"message":str(e)}
 
 @app.delete("/analytics/sites/{site_id}")
-def delete_site(site_id: str):
+def delete_site(site_id: str, authorization: Optional[str]=Header(default=None)):
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+    org = get_org_for_user(auth_user.id)
+    if not org:
+        raise HTTPException(status_code=403, detail="No organisation found")
     try:
+        # Verify site belongs to this org before deleting
+        check = supabase_service.table("sites").select("id").eq("id",site_id).eq("org_id",org["id"]).single().execute()
+        if not check.data:
+            raise HTTPException(status_code=403, detail="Site not found or access denied")
         # Soft-delete triggers the cleanup_inactive_site DB trigger which
         # hard-deletes all energy_data, gas_data, ai_recommendations,
         # ai_insights, and anomalies rows for this site.
-        supabase.table("sites").update({"is_active": False}).eq("id", site_id).execute()
+        supabase_service.table("sites").update({"is_active": False}).eq("id", site_id).execute()
         return {"success": True, "deleted": site_id}
+    except HTTPException: raise
     except Exception as e:
         return {"success": False, "message": str(e)}
 
@@ -2724,10 +2763,15 @@ async def ai_analyst_chat(req: ChatRequest,
         elec=stats.get("electricity",{}); gas=stats.get("gas",{})
         today=datetime.utcnow().strftime("%Y-%m-%d")
 
-        # Fetch BMS context for the org's first active site
+        # Fetch BMS context for the org's first active site (scoped to org)
         site_id = None
         try:
-            sites = (supabase.table("sites").select("id").eq("is_active", True).limit(1).execute().data)
+            org_for_bms = get_org_for_user(get_user_from_token(authorization).id) if authorization else None
+            if org_for_bms:
+                sites = (supabase_service.table("sites").select("id")
+                         .eq("org_id", org_for_bms["id"]).eq("is_active", True).limit(1).execute().data)
+            else:
+                sites = []
             if sites: site_id = sites[0]["id"]
         except Exception: pass
         bms_context = build_bms_context_for_ai(site_id=site_id, days=7)
