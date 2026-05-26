@@ -104,6 +104,7 @@ class ParameterCreate(BaseModel):
 # ─── TIER CONFIG ──────────────────────────────────────────────
 
 TIER_FEATURES = {
+    # Trial: full Premium-level access for 14 days, no multi-site, no AI Senior Consultant
     "trial": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
         "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
@@ -111,31 +112,39 @@ TIER_FEATURES = {
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": True, "settings_sites": True, "multi_site": False,
         "api_access": False, "bms_parameters": True, "carbon_reporting": True,
+        "mqtt_monitoring": False, "whatsapp_ai": False,
     },
+    # Basic £49: dashboard, analytics, anomalies, upload, basic report. No AI, no multi-site.
     "basic": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
         "ai_insights": False, "ai_recommendations": False, "ai_energy_analyst": False,
         "ai_senior_consultant": False, "weather_normalisation": False,
         "report_basic": True, "report_ai_insights": False, "report_full": False,
         "report_premium_full": False, "settings_sites": True, "multi_site": False,
-        "api_access": False, "bms_parameters": False, "carbon_reporting": False,
+        "api_access": False, "bms_parameters": True, "carbon_reporting": False,
+        "mqtt_monitoring": False, "whatsapp_ai": False,
     },
+    # Standard £149: AI Insights, full reports, multi-site, weather normalisation, carbon reporting.
     "standard": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
         "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": False,
         "ai_senior_consultant": False, "weather_normalisation": True,
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": False, "settings_sites": True, "multi_site": True,
-        "api_access": False, "bms_parameters": False, "carbon_reporting": True,
+        "api_access": False, "bms_parameters": True, "carbon_reporting": True,
+        "mqtt_monitoring": False, "whatsapp_ai": False,
     },
+    # Premium £349: adds AI Energy Analyst chat + real-time MQTT monitoring.
     "premium": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
         "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
         "ai_senior_consultant": False, "weather_normalisation": True,
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": True, "settings_sites": True, "multi_site": True,
-        "api_access": True, "bms_parameters": True, "carbon_reporting": True,
+        "api_access": False, "bms_parameters": True, "carbon_reporting": True,
+        "mqtt_monitoring": True, "whatsapp_ai": False,
     },
+    # Enterprise Custom: everything + AI Senior Consultant, WhatsApp AI, API access, unlimited sites.
     "enterprise": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
         "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
@@ -143,6 +152,7 @@ TIER_FEATURES = {
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": True, "settings_sites": True, "multi_site": True,
         "api_access": True, "bms_parameters": True, "carbon_reporting": True,
+        "mqtt_monitoring": True, "whatsapp_ai": True,
     },
 }
 
@@ -156,9 +166,11 @@ FEATURE_REQUIRED_TIER = {
     "carbon_reporting":      "standard",
     "ai_energy_analyst":     "premium",
     "report_premium_full":   "premium",
-    "api_access":            "premium",
-    "bms_parameters":        "premium",
+    "mqtt_monitoring":       "premium",
+    "api_access":            "enterprise",
+    "whatsapp_ai":           "enterprise",
     "ai_senior_consultant":  "enterprise",
+    # bms_parameters intentionally removed — available to all tiers
 }
 
 STRIPE_PRICE_MAP = {
@@ -1321,7 +1333,10 @@ def delete_site(site_id: str):
 def list_equipment(site_id: str=Query(...),
                    authorization: Optional[str]=Header(default=None),
                    org_id: Optional[str]=Query(default=None)):
-    require_feature_jwt(authorization, org_id, "bms_parameters")
+    # BMS reading available to all tiers — no tier gate
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
     try:
         result = (supabase.table("equipment")
                   .select("id,name,category,manufacturer,model,bms_ref,is_active,created_at")
@@ -1372,7 +1387,10 @@ def delete_equipment(equipment_id: str,
 def list_parameters(equipment_id: str,
                     authorization: Optional[str]=Header(default=None),
                     org_id: Optional[str]=Query(default=None)):
-    require_feature_jwt(authorization, org_id, "bms_parameters")
+    # BMS reading available to all tiers — no tier gate
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
     try:
         result = (supabase.table("equipment_parameters")
                   .select("id,parameter_name,parameter_type,unit,bms_tag,created_at")
@@ -1454,7 +1472,10 @@ def get_readings(parameter_id: str,
                  limit: int=Query(default=500, le=5000),
                  authorization: Optional[str]=Header(default=None),
                  org_id: Optional[str]=Query(default=None)):
-    require_feature_jwt(authorization, org_id, "bms_parameters")
+    # BMS reading available to all tiers — no tier gate
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
     try:
         query = (supabase.table("equipment_readings")
                  .select("id,recorded_at,value,value_text")
@@ -1487,7 +1508,10 @@ def get_site_bms_summary(site_id: str,
     Summary of all BMS equipment and latest parameter values for a site.
     Used by the frontend equipment overview page.
     """
-    require_feature_jwt(authorization, org_id, "bms_parameters")
+    # BMS reading available to all tiers — no tier gate
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
     try:
         equipment_rows = (supabase.table("equipment")
                           .select("id,name,category,manufacturer,model,bms_ref")
