@@ -2343,7 +2343,10 @@ def get_insights_data_availability(org_id: Optional[str]=Query(default=None),
     Returns availability of electricity, gas, and BMS data,
     plus generation status for each period type.
     """
-    require_feature_jwt(authorization, org_id, "ai_insights")
+    # data-availability is a lightweight read check — no tier gate
+    auth_user = get_user_from_token(authorization)
+    if not auth_user:
+        raise HTTPException(status_code=401, detail="Unauthorised")
     try:
         # Check electricity data
         elec_q = supabase.table("energy_data").select("timestamp").order("timestamp", desc=False).limit(1)
