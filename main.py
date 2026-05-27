@@ -105,13 +105,14 @@ class ParameterCreate(BaseModel):
 
 TIER_FEATURES = {
     # Trial: full Premium-level access for 7 days (minus AI Senior Consultant, MQTT, WhatsApp)
+    # Trial: Standard-level access for 7 days
     "trial": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
-        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
+        "ai_insights": True, "ai_recommendations": False, "ai_energy_analyst": False,
         "ai_senior_consultant": False, "weather_normalisation": True,
         "degree_days": True,
         "report_basic": True, "report_ai_insights": True, "report_full": True,
-        "report_premium_full": True, "settings_sites": True, "multi_site": True,
+        "report_premium_full": False, "settings_sites": True, "multi_site": True,
         "api_access": False, "bms_parameters": True, "carbon_reporting": True,
         "mqtt_monitoring": False, "whatsapp_ai": False,
     },
