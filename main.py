@@ -104,51 +104,71 @@ class ParameterCreate(BaseModel):
 # ─── TIER CONFIG ──────────────────────────────────────────────
 
 TIER_FEATURES = {
-    # Trial: full Premium-level access for 14 days, no multi-site, no AI Senior Consultant
+    # Trial: full Premium-level access for 7 days (minus AI Senior Consultant, MQTT, WhatsApp)
     "trial": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
         "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
         "ai_senior_consultant": False, "weather_normalisation": True,
+        "degree_days": True,
         "report_basic": True, "report_ai_insights": True, "report_full": True,
-        "report_premium_full": True, "settings_sites": True, "multi_site": False,
+        "report_premium_full": True, "settings_sites": True, "multi_site": True,
         "api_access": False, "bms_parameters": True, "carbon_reporting": True,
         "mqtt_monitoring": False, "whatsapp_ai": False,
     },
-    # Basic £49: dashboard, analytics, anomalies, upload, basic report. No AI, no multi-site.
+    # Basic £49: dashboard, analytics (no weather/degree days), basic report, 1 site. No AI.
     "basic": {
-        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "dashboard": True, "analytics": True, "anomalies": False, "upload_data": True,
         "ai_insights": False, "ai_recommendations": False, "ai_energy_analyst": False,
         "ai_senior_consultant": False, "weather_normalisation": False,
+        "degree_days": False,
         "report_basic": True, "report_ai_insights": False, "report_full": False,
         "report_premium_full": False, "settings_sites": True, "multi_site": False,
         "api_access": False, "bms_parameters": True, "carbon_reporting": False,
         "mqtt_monitoring": False, "whatsapp_ai": False,
     },
-    # Standard £149: AI Insights, full reports, multi-site, weather normalisation, carbon reporting.
+    # Standard £149: adds anomalies, weather normalisation, degree days, AI insights,
+    # full reports, multi-site, carbon reporting.
     "standard": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
-        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": False,
+        "ai_insights": True, "ai_recommendations": False, "ai_energy_analyst": False,
         "ai_senior_consultant": False, "weather_normalisation": True,
+        "degree_days": True,
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": False, "settings_sites": True, "multi_site": True,
         "api_access": False, "bms_parameters": True, "carbon_reporting": True,
         "mqtt_monitoring": False, "whatsapp_ai": False,
     },
-    # Premium £349: adds AI Energy Analyst chat + real-time MQTT monitoring.
+    # Premium £279 (+ £70 add-on for Cloud Connect/MQTT): adds AI recommendations,
+    # AI Energy Analyst, premium full report. MQTT is an optional add-on.
     "premium": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
         "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
         "ai_senior_consultant": False, "weather_normalisation": True,
+        "degree_days": True,
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": True, "settings_sites": True, "multi_site": True,
         "api_access": False, "bms_parameters": True, "carbon_reporting": True,
-        "mqtt_monitoring": True, "whatsapp_ai": False,
+        "mqtt_monitoring": False,  # add-on: +£70/mo via Cloud Connect
+        "whatsapp_ai": False,
     },
-    # Enterprise Custom: everything + AI Senior Consultant, WhatsApp AI, API access, unlimited sites.
+    # Enterprise POA: everything including Cloud Connect, AI Senior Consultant,
+    # WhatsApp AI, API access, dedicated support.
     "enterprise": {
         "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
         "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
         "ai_senior_consultant": True, "weather_normalisation": True,
+        "degree_days": True,
+        "report_basic": True, "report_ai_insights": True, "report_full": True,
+        "report_premium_full": True, "settings_sites": True, "multi_site": True,
+        "api_access": True, "bms_parameters": True, "carbon_reporting": True,
+        "mqtt_monitoring": True, "whatsapp_ai": True,
+    },
+    # Custom = Enterprise (legacy tier name)
+    "custom": {
+        "dashboard": True, "analytics": True, "anomalies": True, "upload_data": True,
+        "ai_insights": True, "ai_recommendations": True, "ai_energy_analyst": True,
+        "ai_senior_consultant": True, "weather_normalisation": True,
+        "degree_days": True,
         "report_basic": True, "report_ai_insights": True, "report_full": True,
         "report_premium_full": True, "settings_sites": True, "multi_site": True,
         "api_access": True, "bms_parameters": True, "carbon_reporting": True,
@@ -157,16 +177,18 @@ TIER_FEATURES = {
 }
 
 FEATURE_REQUIRED_TIER = {
+    "anomalies":             "standard",
     "ai_insights":           "standard",
-    "ai_recommendations":    "standard",
     "weather_normalisation": "standard",
+    "degree_days":           "standard",
     "report_ai_insights":    "standard",
     "report_full":           "standard",
     "multi_site":            "standard",
     "carbon_reporting":      "standard",
+    "ai_recommendations":    "premium",
     "ai_energy_analyst":     "premium",
     "report_premium_full":   "premium",
-    "mqtt_monitoring":       "premium",
+    "mqtt_monitoring":       "enterprise",
     "api_access":            "enterprise",
     "whatsapp_ai":           "enterprise",
     "ai_senior_consultant":  "enterprise",
