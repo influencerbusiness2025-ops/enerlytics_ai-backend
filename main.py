@@ -38,6 +38,8 @@ STRIPE_PRICE_STANDARD_ANNUAL  = os.environ.get("STRIPE_PRICE_STANDARD_ANNUAL", "
 STRIPE_PRICE_PREMIUM_MONTHLY  = os.environ.get("STRIPE_PRICE_PREMIUM_MONTHLY", "")
 STRIPE_PRICE_PREMIUM_ANNUAL   = os.environ.get("STRIPE_PRICE_PREMIUM_ANNUAL", "")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://ai.effictraenergy.co.uk")
+RESEND_API_KEY    = os.environ.get("RESEND_API_KEY", "")
+ALERT_FROM_EMAIL  = "alerts@effictraenergy.co.uk"
 ELECTRICITY_RATE_GBP = 0.28
 GAS_RATE_GBP         = 0.07
 
@@ -86,8 +88,127 @@ def parse_mqtt_payload(payload: str):
         return None
 
 
+async def send_anomaly_email(site_name: str, org_id: str, reading_type: str,
+                             value: float, average: float, ratio: float,
+                             severity: str, timestamp: str):
+    """Send anomaly alert email to all users in the org via Resend."""
+    if not RESEND_API_KEY:
+        print("[MQTT] RESEND_API_KEY not set — skipping email alert")
+        return
+    try:
+        # Look up all user emails in the org
+        users_result = supabase_service.table("users")\
+            .select("email")\
+            .eq("org_id", org_id)\
+            .execute()
+        emails = [u["email"] for u in (users_result.data or []) if u.get("email")]
+        if not emails:
+            print(f"[MQTT] No emails found for org {org_id} — skipping alert")
+            return
+
+        # Format timestamp nicely
+        try:
+            ts_dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            ts_formatted = ts_dt.strftime("%-d %b %Y %H:%M UTC")
+        except Exception:
+            ts_formatted = timestamp
+
+        severity_emoji = "🔴" if severity == "high" else "🟡"
+        unit = "kWh"
+
+        subject = f"⚡ Anomaly detected at {site_name}"
+
+        html_body = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px;">
+          <div style="background: #0f172a; padding: 20px 24px; border-radius: 8px 8px 0 0;">
+            <h1 style="color: #ffffff; margin: 0; font-size: 20px;">
+              ⚡ EffictraInsight™ Alert
+            </h1>
+          </div>
+          <div style="border: 1px solid #e2e8f0; border-top: none; padding: 24px; border-radius: 0 0 8px 8px;">
+            <p style="font-size: 16px; color: #1e293b; margin-top: 0;">
+              {severity_emoji} A <strong>{severity.upper()}</strong> severity anomaly was detected.
+            </p>
+            <table style="width: 100%; border-collapse: collapse; margin: 20px 0;">
+              <tr style="background: #f8fafc;">
+                <td style="padding: 10px 14px; color: #64748b; font-size: 14px; width: 40%;">Site</td>
+                <td style="padding: 10px 14px; color: #1e293b; font-size: 14px; font-weight: bold;">{site_name}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 14px; color: #64748b; font-size: 14px;">Energy Type</td>
+                <td style="padding: 10px 14px; color: #1e293b; font-size: 14px;">{reading_type.capitalize()}</td>
+              </tr>
+              <tr style="background: #f8fafc;">
+                <td style="padding: 10px 14px; color: #64748b; font-size: 14px;">Reading</td>
+                <td style="padding: 10px 14px; color: #dc2626; font-size: 14px; font-weight: bold;">{value:.2f} {unit}</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 14px; color: #64748b; font-size: 14px;">7-Day Average</td>
+                <td style="padding: 10px 14px; color: #1e293b; font-size: 14px;">{average:.2f} {unit}</td>
+              </tr>
+              <tr style="background: #f8fafc;">
+                <td style="padding: 10px 14px; color: #64748b; font-size: 14px;">Ratio</td>
+                <td style="padding: 10px 14px; color: #dc2626; font-size: 14px; font-weight: bold;">{ratio:.1f}x above normal</td>
+              </tr>
+              <tr>
+                <td style="padding: 10px 14px; color: #64748b; font-size: 14px;">Time</td>
+                <td style="padding: 10px 14px; color: #1e293b; font-size: 14px;">{ts_formatted}</td>
+              </tr>
+            </table>
+            <div style="text-align: center; margin: 28px 0 16px;">
+              <a href="{FRONTEND_URL}" style="background: #0f172a; color: #ffffff; padding: 12px 28px;
+                 border-radius: 6px; text-decoration: none; font-size: 14px; font-weight: bold;">
+                View Dashboard →
+              </a>
+            </div>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0 16px;">
+            <p style="color: #94a3b8; font-size: 12px; text-align: center; margin: 0;">
+              EffictraInsight™ | Effictra Energy<br>
+              You're receiving this because anomaly alerts are enabled for your account.
+            </p>
+          </div>
+        </div>
+        """
+
+        text_body = (
+            f"ANOMALY ALERT — {severity.upper()}\n\n"
+            f"Site: {site_name}\n"
+            f"Type: {reading_type.capitalize()}\n"
+            f"Reading: {value:.2f} {unit}\n"
+            f"7-Day Average: {average:.2f} {unit}\n"
+            f"Ratio: {ratio:.1f}x above normal\n"
+            f"Time: {ts_formatted}\n\n"
+            f"View dashboard: {FRONTEND_URL}\n\n"
+            f"EffictraInsight™ | Effictra Energy"
+        )
+
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            for email in emails:
+                resp = await client.post(
+                    "https://api.resend.com/emails",
+                    headers={
+                        "Authorization": f"Bearer {RESEND_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "from": f"EffictraInsight™ <{ALERT_FROM_EMAIL}>",
+                        "to": [email],
+                        "subject": subject,
+                        "html": html_body,
+                        "text": text_body,
+                    }
+                )
+                if resp.status_code == 200:
+                    print(f"[MQTT] ✉️  Alert email sent to {email}")
+                else:
+                    print(f"[MQTT] Email send failed for {email}: {resp.status_code} {resp.text}")
+
+    except Exception as e:
+        print(f"[MQTT] Email error: {e}")
+
+
 async def check_for_anomaly(site_id: str, org_id: str, reading_type: str, value: float, timestamp: str):
-    """Check if reading is anomalous vs 7-day rolling average. Create alert if so."""
+    """Check if reading is anomalous vs 7-day rolling average. Create alert + send email if so."""
     try:
         table = "energy_data" if reading_type == "electricity" else "gas_data"
         cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -120,6 +241,21 @@ async def check_for_anomaly(site_id: str, org_id: str, reading_type: str, value:
                 f"{reading_type.capitalize()} reading of {value:.2f} is "
                 f"{ratio:.1f}x above the 7-day average of {average:.2f}"
             )
+
+            # Look up site name dynamically
+            site_name = site_id  # fallback
+            try:
+                site_result = supabase_service.table("sites")\
+                    .select("name")\
+                    .eq("id", site_id)\
+                    .single()\
+                    .execute()
+                if site_result.data:
+                    site_name = site_result.data.get("name", site_id)
+            except Exception:
+                pass
+
+            # Insert alert to DB
             supabase_service.table("mqtt_alerts").insert({
                 "site_id": site_id,
                 "org_id": org_id,
@@ -129,7 +265,19 @@ async def check_for_anomaly(site_id: str, org_id: str, reading_type: str, value:
                 "reading_value": value,
                 "threshold_value": round(average * ANOMALY_MULTIPLIER_MEDIUM, 2),
             }).execute()
-            print(f"[MQTT] 🚨 {severity.upper()} anomaly: {message}")
+            print(f"[MQTT] 🚨 {severity.upper()} anomaly at {site_name}: {message}")
+
+            # Send email alert
+            await send_anomaly_email(
+                site_name=site_name,
+                org_id=org_id,
+                reading_type=reading_type,
+                value=value,
+                average=average,
+                ratio=ratio,
+                severity=severity,
+                timestamp=timestamp,
+            )
 
     except Exception as e:
         print(f"[MQTT] Anomaly check error: {e}")
