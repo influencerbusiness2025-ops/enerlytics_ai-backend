@@ -6,12 +6,21 @@ from io import StringIO
 from supabase import create_client
 import httpx
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List
 import json
 import os
 import hmac
 import hashlib
+import asyncio
+import ssl
+
+try:
+    import aiomqtt
+    MQTT_AVAILABLE = True
+except ImportError:
+    MQTT_AVAILABLE = False
+    print("[MQTT] aiomqtt not installed — MQTT listener disabled")
 
 # ─── CONFIG ───────────────────────────────────────────────────
 
@@ -51,6 +60,270 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── MQTT LISTENER ────────────────────────────────────────────
+
+ANOMALY_MULTIPLIER_HIGH   = 2.5
+ANOMALY_MULTIPLIER_MEDIUM = 1.75
+MQTT_POLL_INTERVAL        = 60  # seconds between DB polls for new connections
+
+
+def parse_mqtt_payload(payload: str):
+    """Parse and validate incoming MQTT JSON payload. Must have timestamp + value."""
+    try:
+        data = json.loads(payload)
+        if "timestamp" not in data or "value" not in data:
+            print(f"[MQTT] Invalid payload — missing timestamp or value: {payload[:100]}")
+            return None
+        ts = data["timestamp"]
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        data["timestamp"] = ts.isoformat()
+        data["value"] = float(data["value"])
+        return data
+    except Exception as e:
+        print(f"[MQTT] Payload parse error: {e} — raw: {payload[:100]}")
+        return None
+
+
+async def check_for_anomaly(site_id: str, org_id: str, reading_type: str, value: float, timestamp: str):
+    """Check if reading is anomalous vs 7-day rolling average. Create alert if so."""
+    try:
+        table = "energy_data" if reading_type == "electricity" else "gas_data"
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        result = supabase_service.table(table)\
+            .select("consumption")\
+            .eq("site_id", site_id)\
+            .gte("timestamp", cutoff)\
+            .execute()
+
+        if not result.data or len(result.data) < 10:
+            return  # Not enough data for a reliable baseline
+
+        readings = [float(r["consumption"]) for r in result.data if r.get("consumption") is not None]
+        if not readings:
+            return
+
+        average = sum(readings) / len(readings)
+        if average == 0:
+            return
+
+        ratio = value / average
+        severity = None
+        if ratio >= ANOMALY_MULTIPLIER_HIGH:
+            severity = "high"
+        elif ratio >= ANOMALY_MULTIPLIER_MEDIUM:
+            severity = "medium"
+
+        if severity:
+            message = (
+                f"{reading_type.capitalize()} reading of {value:.2f} is "
+                f"{ratio:.1f}x above the 7-day average of {average:.2f}"
+            )
+            supabase_service.table("mqtt_alerts").insert({
+                "site_id": site_id,
+                "org_id": org_id,
+                "alert_type": "anomaly",
+                "severity": severity,
+                "message": message,
+                "reading_value": value,
+                "threshold_value": round(average * ANOMALY_MULTIPLIER_MEDIUM, 2),
+            }).execute()
+            print(f"[MQTT] 🚨 {severity.upper()} anomaly: {message}")
+
+    except Exception as e:
+        print(f"[MQTT] Anomaly check error: {e}")
+
+
+async def handle_electricity_message(payload: str, site_id: str, org_id: str):
+    """Validate, deduplicate, and insert an electricity reading."""
+    data = parse_mqtt_payload(payload)
+    if not data:
+        return
+    try:
+        existing = supabase_service.table("energy_data")\
+            .select("id")\
+            .eq("site_id", site_id)\
+            .eq("timestamp", data["timestamp"])\
+            .execute()
+        if existing.data:
+            print(f"[MQTT] Duplicate electricity reading skipped: {data['timestamp']}")
+            return
+        supabase_service.table("energy_data").insert({
+            "timestamp": data["timestamp"],
+            "consumption": data["value"],
+            "site_id": site_id,
+            "org_id": org_id,
+        }).execute()
+        print(f"[MQTT] ⚡ Electricity inserted: {data['value']} kWh at {data['timestamp']}")
+        await check_for_anomaly(site_id, org_id, "electricity", data["value"], data["timestamp"])
+    except Exception as e:
+        print(f"[MQTT] Electricity insert error: {e}")
+
+
+async def handle_gas_message(payload: str, site_id: str, org_id: str):
+    """Validate, deduplicate, and insert a gas reading."""
+    data = parse_mqtt_payload(payload)
+    if not data:
+        return
+    try:
+        existing = supabase_service.table("gas_data")\
+            .select("id")\
+            .eq("site_id", site_id)\
+            .eq("timestamp", data["timestamp"])\
+            .execute()
+        if existing.data:
+            print(f"[MQTT] Duplicate gas reading skipped: {data['timestamp']}")
+            return
+        supabase_service.table("gas_data").insert({
+            "timestamp": data["timestamp"],
+            "consumption": data["value"],
+            "unit": data.get("unit", "kWh"),
+            "site_id": site_id,
+            "org_id": org_id,
+        }).execute()
+        print(f"[MQTT] 🔥 Gas inserted: {data['value']} at {data['timestamp']}")
+        await check_for_anomaly(site_id, org_id, "gas", data["value"], data["timestamp"])
+    except Exception as e:
+        print(f"[MQTT] Gas insert error: {e}")
+
+
+async def handle_bms_message(payload: str, site_id: str, org_id: str):
+    """Validate and insert a BMS parameter reading."""
+    try:
+        data = json.loads(payload)
+        if not all(k in data for k in ["timestamp", "parameter", "value"]):
+            print(f"[MQTT] Invalid BMS payload — missing fields: {payload[:100]}")
+            return
+        ts = data["timestamp"]
+        if isinstance(ts, str):
+            ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        supabase_service.table("bms_data").insert({
+            "timestamp": ts.isoformat(),
+            "parameter": data["parameter"],
+            "value": float(data["value"]),
+            "unit": data.get("unit", ""),
+            "site_id": site_id,
+            "org_id": org_id,
+        }).execute()
+        print(f"[MQTT] 🏢 BMS inserted: {data['parameter']}={data['value']} at {ts}")
+    except Exception as e:
+        print(f"[MQTT] BMS insert error: {e}")
+
+
+async def connect_and_listen(connection: dict):
+    """Connect to one MQTT broker and listen until disconnected or cancelled."""
+    if not MQTT_AVAILABLE:
+        return
+
+    site_id   = connection["site_id"]
+    org_id    = connection["org_id"]
+    conn_id   = connection["id"]
+    broker    = connection["broker_url"]
+    port      = connection.get("port", 8883)
+    username  = connection.get("username")
+    password  = connection.get("password")
+    use_tls   = connection.get("use_tls", True)
+    topic_elec = connection.get("topic_electricity")
+    topic_gas  = connection.get("topic_gas")
+    topic_bms  = connection.get("topic_bms")
+
+    tls_context = ssl.create_default_context() if use_tls else None
+    print(f"[MQTT] Connecting to {broker}:{port} for site {site_id}")
+
+    try:
+        async with aiomqtt.Client(
+            hostname=broker,
+            port=port,
+            username=username,
+            password=password,
+            tls_context=tls_context,
+        ) as client:
+            if topic_elec:
+                await client.subscribe(topic_elec)
+                print(f"[MQTT] Subscribed electricity: {topic_elec}")
+            if topic_gas:
+                await client.subscribe(topic_gas)
+                print(f"[MQTT] Subscribed gas: {topic_gas}")
+            if topic_bms:
+                await client.subscribe(topic_bms)
+                print(f"[MQTT] Subscribed BMS: {topic_bms}")
+
+            # Stamp last_connected_at
+            supabase_service.table("mqtt_connections")\
+                .update({"last_connected_at": datetime.now(timezone.utc).isoformat()})\
+                .eq("id", conn_id).execute()
+
+            async for message in client.messages:
+                topic   = str(message.topic)
+                payload = message.payload.decode("utf-8")
+                print(f"[MQTT] Message on {topic}: {payload[:80]}")
+
+                if topic_elec and topic == topic_elec:
+                    await handle_electricity_message(payload, site_id, org_id)
+                elif topic_gas and topic == topic_gas:
+                    await handle_gas_message(payload, site_id, org_id)
+                elif topic_bms and (
+                    topic == topic_bms or
+                    topic.startswith(topic_bms.rstrip("#").rstrip("/"))
+                ):
+                    await handle_bms_message(payload, site_id, org_id)
+
+    except asyncio.CancelledError:
+        print(f"[MQTT] Listener cancelled for site {site_id}")
+    except Exception as e:
+        print(f"[MQTT] Connection error for site {site_id}: {e}")
+        # Mark inactive so it gets retried on next poll cycle
+        try:
+            supabase_service.table("mqtt_connections")\
+                .update({"is_active": False})\
+                .eq("id", conn_id).execute()
+        except Exception:
+            pass
+
+
+async def mqtt_listener_loop():
+    """
+    Main loop — polls DB every 60s for active connections.
+    Spawns one asyncio task per active connection. Cancels stale ones.
+    """
+    print("[MQTT] Listener loop started")
+    active_tasks: dict = {}  # conn_id → asyncio.Task
+
+    while True:
+        try:
+            result = supabase_service.table("mqtt_connections")\
+                .select("*")\
+                .eq("is_active", True)\
+                .execute()
+            connections = result.data or []
+            active_ids  = {c["id"] for c in connections}
+
+            # Cancel tasks whose connections are no longer active
+            for conn_id in list(active_tasks.keys()):
+                if conn_id not in active_ids:
+                    active_tasks[conn_id].cancel()
+                    del active_tasks[conn_id]
+                    print(f"[MQTT] Stopped listener for connection {conn_id}")
+
+            # Start tasks for new active connections
+            for conn in connections:
+                conn_id = conn["id"]
+                if conn_id not in active_tasks or active_tasks[conn_id].done():
+                    task = asyncio.create_task(connect_and_listen(conn))
+                    active_tasks[conn_id] = task
+                    print(f"[MQTT] Started listener for connection {conn_id}")
+
+        except Exception as e:
+            print(f"[MQTT] Listener loop error: {e}")
+
+        await asyncio.sleep(MQTT_POLL_INTERVAL)
+
+
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(mqtt_listener_loop())
+    print("[STARTUP] MQTT listener task created")
 
 # ─── MODELS ───────────────────────────────────────────────────
 
