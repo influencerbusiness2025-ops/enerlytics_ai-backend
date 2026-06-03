@@ -3930,3 +3930,310 @@ def export_carbon_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename=carbon_report_{period}.csv"},
     )
+
+
+# ─── MQTT MANAGEMENT ENDPOINTS ────────────────────────────────────────────────
+
+class MQTTConnectionCreate(BaseModel):
+    site_id: str
+    broker_type: str
+    broker_url: str
+    port: int = 8883
+    topic_electricity: Optional[str] = None
+    topic_gas: Optional[str] = None
+    topic_bms: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    use_tls: bool = True
+
+class MQTTConnectionUpdate(BaseModel):
+    broker_url: Optional[str] = None
+    port: Optional[int] = None
+    topic_electricity: Optional[str] = None
+    topic_gas: Optional[str] = None
+    topic_bms: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    use_tls: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+@app.post("/mqtt/connections")
+async def create_mqtt_connection(
+    body: MQTTConnectionCreate,
+    authorization: Optional[str] = Header(None)
+):
+    """Save a new MQTT broker connection for a site."""
+    user_data = await get_current_user(authorization)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+
+    await require_feature_jwt(authorization, "mqtt_monitoring")
+
+    org_id = user_data.get("org", {}).get("id")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="No org found for user")
+
+    # Verify site belongs to this org
+    site_check = supabase_service.table("sites")\
+        .select("id")\
+        .eq("id", body.site_id)\
+        .eq("org_id", org_id)\
+        .execute()
+    if not site_check.data:
+        raise HTTPException(status_code=404, detail="Site not found")
+
+    result = supabase_service.table("mqtt_connections").insert({
+        "site_id": body.site_id,
+        "org_id": org_id,
+        "broker_type": body.broker_type,
+        "broker_url": body.broker_url,
+        "port": body.port,
+        "topic_electricity": body.topic_electricity,
+        "topic_gas": body.topic_gas,
+        "topic_bms": body.topic_bms,
+        "username": body.username,
+        "password": body.password,
+        "use_tls": body.use_tls,
+        "is_active": False,
+    }).execute()
+
+    return {"success": True, "connection": result.data[0] if result.data else {}}
+
+
+@app.get("/mqtt/connections")
+async def get_mqtt_connections(
+    site_id: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None)
+):
+    """List all MQTT connections for the org, optionally filtered by site."""
+    user_data = await get_current_user(authorization)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+
+    await require_feature_jwt(authorization, "mqtt_monitoring")
+
+    org_id = user_data.get("org", {}).get("id")
+
+    query = supabase_service.table("mqtt_connections")\
+        .select("*")\
+        .eq("org_id", org_id)\
+        .order("created_at", desc=True)
+
+    if site_id:
+        query = query.eq("site_id", site_id)
+
+    result = query.execute()
+    return {"connections": result.data or []}
+
+
+@app.put("/mqtt/connections/{connection_id}")
+async def update_mqtt_connection(
+    connection_id: str,
+    body: MQTTConnectionUpdate,
+    authorization: Optional[str] = Header(None)
+):
+    """Update an existing MQTT connection (credentials, topics, active state)."""
+    user_data = await get_current_user(authorization)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+
+    await require_feature_jwt(authorization, "mqtt_monitoring")
+
+    org_id = user_data.get("org", {}).get("id")
+
+    existing = supabase_service.table("mqtt_connections")\
+        .select("id")\
+        .eq("id", connection_id)\
+        .eq("org_id", org_id)\
+        .execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    updates = {k: v for k, v in body.dict().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    result = supabase_service.table("mqtt_connections")\
+        .update(updates)\
+        .eq("id", connection_id)\
+        .execute()
+
+    return {"success": True, "connection": result.data[0] if result.data else {}}
+
+
+@app.delete("/mqtt/connections/{connection_id}")
+async def delete_mqtt_connection(
+    connection_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Remove an MQTT connection. Listener will stop within 60s."""
+    user_data = await get_current_user(authorization)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+
+    await require_feature_jwt(authorization, "mqtt_monitoring")
+
+    org_id = user_data.get("org", {}).get("id")
+
+    existing = supabase_service.table("mqtt_connections")\
+        .select("id")\
+        .eq("id", connection_id)\
+        .eq("org_id", org_id)\
+        .execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    supabase_service.table("mqtt_connections")\
+        .delete()\
+        .eq("id", connection_id)\
+        .execute()
+
+    return {"success": True, "message": "Connection deleted. Listener will stop within 60 seconds."}
+
+
+@app.post("/mqtt/connections/{connection_id}/test")
+async def test_mqtt_connection(
+    connection_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Test connectivity to an MQTT broker. Returns success/failure + latency."""
+    if not MQTT_AVAILABLE:
+        raise HTTPException(status_code=503, detail="MQTT not available on this server")
+
+    user_data = await get_current_user(authorization)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+
+    await require_feature_jwt(authorization, "mqtt_monitoring")
+
+    org_id = user_data.get("org", {}).get("id")
+
+    conn_result = supabase_service.table("mqtt_connections")\
+        .select("*")\
+        .eq("id", connection_id)\
+        .eq("org_id", org_id)\
+        .execute()
+
+    if not conn_result.data:
+        raise HTTPException(status_code=404, detail="Connection not found")
+
+    conn = conn_result.data[0]
+    tls_context = ssl.create_default_context() if conn.get("use_tls") else None
+
+    start = datetime.now(timezone.utc)
+    try:
+        async with aiomqtt.Client(
+            hostname=conn["broker_url"],
+            port=conn.get("port", 8883),
+            username=conn.get("username"),
+            password=conn.get("password"),
+            tls_context=tls_context,
+            timeout=10.0,
+        ) as client:
+            latency_ms = int((datetime.now(timezone.utc) - start).total_seconds() * 1000)
+            return {
+                "success": True,
+                "latency_ms": latency_ms,
+                "broker": conn["broker_url"],
+                "message": f"Connected successfully in {latency_ms}ms"
+            }
+    except Exception as e:
+        return {
+            "success": False,
+            "broker": conn["broker_url"],
+            "message": str(e)
+        }
+
+
+@app.get("/mqtt/alerts")
+async def get_mqtt_alerts(
+    site_id: Optional[str] = Query(None),
+    unacknowledged_only: bool = Query(False),
+    limit: int = Query(50),
+    authorization: Optional[str] = Header(None)
+):
+    """List alerts for the org, optionally filtered by site or unacknowledged status."""
+    user_data = await get_current_user(authorization)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+
+    org_id = user_data.get("org", {}).get("id")
+
+    query = supabase_service.table("mqtt_alerts")\
+        .select("*")\
+        .eq("org_id", org_id)\
+        .order("created_at", desc=True)\
+        .limit(limit)
+
+    if site_id:
+        query = query.eq("site_id", site_id)
+    if unacknowledged_only:
+        query = query.eq("acknowledged", False)
+
+    result = query.execute()
+    alerts = result.data or []
+    unread_count = sum(1 for a in alerts if not a.get("acknowledged"))
+
+    return {
+        "alerts": alerts,
+        "total": len(alerts),
+        "unread_count": unread_count
+    }
+
+
+@app.post("/mqtt/alerts/{alert_id}/acknowledge")
+async def acknowledge_mqtt_alert(
+    alert_id: str,
+    authorization: Optional[str] = Header(None)
+):
+    """Mark an alert as acknowledged."""
+    user_data = await get_current_user(authorization)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+
+    org_id = user_data.get("org", {}).get("id")
+    user_id = user_data.get("id")
+
+    existing = supabase_service.table("mqtt_alerts")\
+        .select("id")\
+        .eq("id", alert_id)\
+        .eq("org_id", org_id)\
+        .execute()
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Alert not found")
+
+    supabase_service.table("mqtt_alerts").update({
+        "acknowledged": True,
+        "acknowledged_at": datetime.now(timezone.utc).isoformat(),
+        "acknowledged_by": user_id,
+    }).eq("id", alert_id).execute()
+
+    return {"success": True, "message": "Alert acknowledged"}
+
+
+@app.get("/mqtt/status")
+async def get_mqtt_status(
+    authorization: Optional[str] = Header(None)
+):
+    """Return MQTT listener health — active connections count and per-connection status."""
+    user_data = await get_current_user(authorization)
+    if not user_data:
+        raise HTTPException(status_code=401, detail="Unauthorised")
+
+    org_id = user_data.get("org", {}).get("id")
+
+    all_conns = supabase_service.table("mqtt_connections")\
+        .select("id, site_id, broker_url, is_active, last_connected_at")\
+        .eq("org_id", org_id)\
+        .execute()
+
+    connections = all_conns.data or []
+    active = [c for c in connections if c.get("is_active")]
+
+    return {
+        "mqtt_available": MQTT_AVAILABLE,
+        "total_connections": len(connections),
+        "active_connections": len(active),
+        "connections": connections,
+    }
