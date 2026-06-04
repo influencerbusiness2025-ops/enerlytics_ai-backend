@@ -58,6 +58,7 @@ app.add_middleware(
         "http://localhost:5173",
         "http://localhost:3000",
     ],
+    allow_origin_regex=r"https://.*\.(lovable\.app|lovable\.dev|gptengineer\.app)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -4156,7 +4157,7 @@ async def get_mqtt_alerts(
     """List alerts for the org, optionally filtered by site or unacknowledged status."""
     user_data = await get_current_user(authorization)
     if not user_data:
-        raise HTTPException(status_code=401, detail="Unauthorised")
+        return {"alerts": [], "total": 0, "unread_count": 0}
 
     org_id = user_data.get("org", {}).get("id")
 
@@ -4219,7 +4220,7 @@ async def get_mqtt_status(
     """Return MQTT listener health — active connections count and per-connection status."""
     user_data = await get_current_user(authorization)
     if not user_data:
-        raise HTTPException(status_code=401, detail="Unauthorised")
+        return {"mqtt_available": MQTT_AVAILABLE, "total_connections": 0, "active_connections": 0, "connections": []}
 
     org_id = user_data.get("org", {}).get("id")
 
