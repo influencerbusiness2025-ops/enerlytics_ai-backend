@@ -3965,13 +3965,9 @@ async def create_mqtt_connection(
     authorization: Optional[str] = Header(None)
 ):
     """Save a new MQTT broker connection for a site."""
-    user_data = await get_current_user(authorization)
-    if not user_data:
-        raise HTTPException(status_code=401, detail="Unauthorised")
-
-    await require_feature_jwt(authorization, "mqtt_monitoring")
-
-    org_id = user_data.get("org", {}).get("id")
+    auth_user, org = require_auth(authorization)
+    require_feature_jwt(authorization, None, "mqtt_monitoring")
+    org_id = org.get("id") if org else None
     if not org_id:
         raise HTTPException(status_code=400, detail="No org found for user")
 
@@ -4008,13 +4004,9 @@ async def get_mqtt_connections(
     authorization: Optional[str] = Header(None)
 ):
     """List all MQTT connections for the org, optionally filtered by site."""
-    user_data = await get_current_user(authorization)
-    if not user_data:
-        raise HTTPException(status_code=401, detail="Unauthorised")
-
-    await require_feature_jwt(authorization, "mqtt_monitoring")
-
-    org_id = user_data.get("org", {}).get("id")
+    auth_user, org = require_auth(authorization)
+    require_feature_jwt(authorization, None, "mqtt_monitoring")
+    org_id = org.get("id") if org else None
 
     query = supabase_service.table("mqtt_connections")\
         .select("*")\
@@ -4035,13 +4027,9 @@ async def update_mqtt_connection(
     authorization: Optional[str] = Header(None)
 ):
     """Update an existing MQTT connection (credentials, topics, active state)."""
-    user_data = await get_current_user(authorization)
-    if not user_data:
-        raise HTTPException(status_code=401, detail="Unauthorised")
-
-    await require_feature_jwt(authorization, "mqtt_monitoring")
-
-    org_id = user_data.get("org", {}).get("id")
+    auth_user, org = require_auth(authorization)
+    require_feature_jwt(authorization, None, "mqtt_monitoring")
+    org_id = org.get("id") if org else None
 
     existing = supabase_service.table("mqtt_connections")\
         .select("id")\
@@ -4069,13 +4057,9 @@ async def delete_mqtt_connection(
     authorization: Optional[str] = Header(None)
 ):
     """Remove an MQTT connection. Listener will stop within 60s."""
-    user_data = await get_current_user(authorization)
-    if not user_data:
-        raise HTTPException(status_code=401, detail="Unauthorised")
-
-    await require_feature_jwt(authorization, "mqtt_monitoring")
-
-    org_id = user_data.get("org", {}).get("id")
+    auth_user, org = require_auth(authorization)
+    require_feature_jwt(authorization, None, "mqtt_monitoring")
+    org_id = org.get("id") if org else None
 
     existing = supabase_service.table("mqtt_connections")\
         .select("id")\
@@ -4102,13 +4086,9 @@ async def test_mqtt_connection(
     if not MQTT_AVAILABLE:
         raise HTTPException(status_code=503, detail="MQTT not available on this server")
 
-    user_data = await get_current_user(authorization)
-    if not user_data:
-        raise HTTPException(status_code=401, detail="Unauthorised")
-
-    await require_feature_jwt(authorization, "mqtt_monitoring")
-
-    org_id = user_data.get("org", {}).get("id")
+    auth_user, org = require_auth(authorization)
+    require_feature_jwt(authorization, None, "mqtt_monitoring")
+    org_id = org.get("id") if org else None
 
     conn_result = supabase_service.table("mqtt_connections")\
         .select("*")\
@@ -4155,11 +4135,11 @@ async def get_mqtt_alerts(
     authorization: Optional[str] = Header(None)
 ):
     """List alerts for the org, optionally filtered by site or unacknowledged status."""
-    user_data = await get_current_user(authorization)
-    if not user_data:
+    try:
+        auth_user, org = require_auth(authorization)
+        org_id = org.get("id") if org else None
+    except Exception:
         return {"alerts": [], "total": 0, "unread_count": 0}
-
-    org_id = user_data.get("org", {}).get("id")
 
     query = supabase_service.table("mqtt_alerts")\
         .select("*")\
@@ -4189,12 +4169,9 @@ async def acknowledge_mqtt_alert(
     authorization: Optional[str] = Header(None)
 ):
     """Mark an alert as acknowledged."""
-    user_data = await get_current_user(authorization)
-    if not user_data:
-        raise HTTPException(status_code=401, detail="Unauthorised")
-
-    org_id = user_data.get("org", {}).get("id")
-    user_id = user_data.get("id")
+    auth_user, org = require_auth(authorization)
+    org_id = org.get("id") if org else None
+    user_id = auth_user.id
 
     existing = supabase_service.table("mqtt_alerts")\
         .select("id")\
@@ -4218,11 +4195,11 @@ async def get_mqtt_status(
     authorization: Optional[str] = Header(None)
 ):
     """Return MQTT listener health — active connections count and per-connection status."""
-    user_data = await get_current_user(authorization)
-    if not user_data:
+    try:
+        auth_user, org = require_auth(authorization)
+        org_id = org.get("id") if org else None
+    except Exception:
         return {"mqtt_available": MQTT_AVAILABLE, "total_connections": 0, "active_connections": 0, "connections": []}
-
-    org_id = user_data.get("org", {}).get("id")
 
     all_conns = supabase_service.table("mqtt_connections")\
         .select("id, site_id, broker_url, is_active, last_connected_at")\
