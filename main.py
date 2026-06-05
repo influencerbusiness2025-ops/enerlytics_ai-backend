@@ -64,6 +64,34 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from starlette.responses import JSONResponse as StarletteJSONResponse
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """Catch all unhandled exceptions and return JSON with CORS headers."""
+    origin = request.headers.get("origin", "")
+    headers = {}
+    allowed = [
+        "https://ai.effictraenergy.co.uk",
+        "https://api.effictraenergy.co.uk",
+        "https://effictraai-backend-production.up.railway.app",
+    ]
+    if origin in allowed or origin.endswith(".lovable.app") or origin.endswith(".lovable.dev"):
+        headers["access-control-allow-origin"] = origin
+        headers["access-control-allow-credentials"] = "true"
+    print(f"[ERROR] Unhandled exception on {request.url.path}: {exc}")
+    if isinstance(exc, HTTPException):
+        return StarletteJSONResponse(
+            status_code=exc.status_code,
+            content={"detail": exc.detail},
+            headers=headers,
+        )
+    return StarletteJSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"},
+        headers=headers,
+    )
+
 # ─── MQTT LISTENER ────────────────────────────────────────────
 
 ANOMALY_MULTIPLIER_HIGH   = 2.5
