@@ -491,6 +491,16 @@ async def mqtt_listener_loop():
                     active_tasks[conn_id] = task
                     print(f"[MQTT] Started listener for connection {conn_id}")
 
+            # Heartbeat — update last_connected_at for all running listeners
+            for conn_id, task in active_tasks.items():
+                if not task.done():
+                    try:
+                        supabase_service.table("mqtt_connections")\
+                            .update({"last_connected_at": datetime.now(timezone.utc).isoformat()})\
+                            .eq("id", conn_id).execute()
+                    except Exception:
+                        pass
+
         except Exception as e:
             print(f"[MQTT] Listener loop error: {e}")
 
@@ -4199,7 +4209,6 @@ async def acknowledge_mqtt_alert(
     """Mark an alert as acknowledged."""
     auth_user, org = require_auth(authorization)
     org_id = org.get("id") if org else None
-    user_id = auth_user.id
 
     existing = supabase_service.table("mqtt_alerts")\
         .select("id")\
@@ -4212,7 +4221,6 @@ async def acknowledge_mqtt_alert(
     supabase_service.table("mqtt_alerts").update({
         "acknowledged": True,
         "acknowledged_at": datetime.now(timezone.utc).isoformat(),
-        "acknowledged_by": user_id,
     }).eq("id", alert_id).execute()
 
     return {"success": True, "message": "Alert acknowledged"}
